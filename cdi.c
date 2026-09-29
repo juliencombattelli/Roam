@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fnmatch.h>
+#include <limits.h>
 #include <locale.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -21,6 +22,7 @@ typedef struct {
     struct dirent **entries;
     int count;
     int selected;
+    int width;
 } Directory;
 
 typedef struct {
@@ -59,13 +61,26 @@ static int accept_entry(const struct dirent *entry)
     return strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0;
 }
 
+static int text_width(const char *source, int limit);
+
 static int load_directory(char *path, Directory *directory)
 {
     struct dirent **entries = NULL;
     int count = scandir(path, &entries, accept_entry, alphasort);
     if (count < 0)
         return -1;
-    *directory = (Directory){.path = path, .entries = entries, .count = count};
+    const char *title = strrchr(path, '/');
+    title = title && title[1] ? title + 1 : path;
+    int width = text_width(title, INT_MAX - 4);
+    if (!count && width < 7)
+        width = 7;
+    for (int index = 0; index < count; ++index) {
+        int entry_width = 1 + text_width(entries[index]->d_name, INT_MAX - 4);
+        if (entry_width > width)
+            width = entry_width;
+    }
+    *directory = (Directory){.path = path, .entries = entries, .count = count,
+                             .width = width < 2 ? 2 : width};
     return 0;
 }
 
@@ -264,17 +279,7 @@ static int text_width(const char *source, int limit)
 
 static int directory_width(const Directory *directory, int limit)
 {
-    const char *title = strrchr(directory->path, '/');
-    title = title && title[1] ? title + 1 : directory->path;
-    int width = text_width(title, limit);
-    if (!directory->count && width < 7)
-        width = 7;
-    for (int index = 0; index < directory->count && width < limit; ++index) {
-        int entry_width = 1 + text_width(directory->entries[index]->d_name, limit - 1);
-        if (entry_width > width)
-            width = entry_width;
-    }
-    return width < 2 ? 2 : width;
+    return directory->width < limit ? directory->width : limit;
 }
 
 static void entry_text(const char *name, bool selected, int skip, int width)
@@ -286,6 +291,62 @@ static void entry_text(const char *name, bool selected, int skip, int width)
         --skip;
     }
     clipped_text(name, skip, width);
+}
+
+static int first_visible(const Directory *directory, int available, int selected)
+{
+    int first = directory->count > available ? selected - available / 2 : 0;
+    if (first < 0)
+        first = 0;
+    if (first > directory->count - available)
+        first = directory->count - available;
+    return first < 0 ? 0 : first;
+}
+
+static int focus_row(const Directory *directory, int available, int selected)
+{
+    int visible = directory->count < available ? directory->count : available;
+    int top = directory->count < available ? 3 + (available - visible) / 2 : 3;
+    return directory->count ? top + selected - first_visible(directory, available, selected)
+                            : 3 + available / 2;
+}
+
+static void draw_entry(const Directory *directory, int index, int row, int column,
+                       int width, bool active)
+{
+    at(row, column);
+    const char *color = color_rule_count
+        ? entry_color(directory, directory->entries[index]->d_name) : NULL;
+    if (color)
+        printf("\033[%sm", color);
+    if (active && index == directory->selected) {
+        printf("\033[7m");
+        printf("%-*s", width, "");
+        at(row, column);
+    } else if (index == directory->selected) {
+        printf("\033[1m");
+    }
+    entry_text(directory->entries[index]->d_name, index == directory->selected, 0, width);
+    printf("\033[0m");
+}
+
+static void draw_link(int column, int parent_row, int child_row, bool erase)
+{
+    at(parent_row, column);
+    fputs(erase ? "    " : parent_row == child_row ? "────" :
+          parent_row < child_row ? "─┐" : "─┘", stdout);
+    if (parent_row == child_row)
+        return;
+    for (int row = parent_row - 1; row > child_row; --row) {
+        at(row, column + 1);
+        fputs(erase ? " " : "│", stdout);
+    }
+    for (int row = parent_row + 1; row < child_row; ++row) {
+        at(row, column + 1);
+        fputs(erase ? " " : "│", stdout);
+    }
+    at(child_row, column + 1);
+    fputs(erase ? "   " : parent_row < child_row ? "└──" : "┌──", stdout);
 }
 
 static void draw(const Directory *directories, size_t depth, const char *message)
@@ -337,16 +398,10 @@ static void draw(const Directory *directories, size_t depth, const char *message
         clipped_text(title, skip, visible_width);
         printf("\033[0m");
 
-        int first = directory->count > available ? directory->selected - available / 2 : 0;
-        if (first < 0)
-            first = 0;
-        if (first > directory->count - available)
-            first = directory->count - available;
-        if (first < 0)
-            first = 0;
+        int first = first_visible(directory, available, directory->selected);
         int visible = directory->count < available ? directory->count : available;
         int top = directory->count < available ? 3 + (available - visible) / 2 : 3;
-        int selected_row = directory->count ? top + directory->selected - first : 3 + available / 2;
+        int selected_row = focus_row(directory, available, directory->selected);
         if (!directory->count) {
             at(3 + available / 2, left);
             clipped_text("(empty)", skip, visible_width);
@@ -354,39 +409,10 @@ static void draw(const Directory *directories, size_t depth, const char *message
         for (int offset = 0; offset < visible; ++offset) {
             int entry_index = first + offset;
             int row = top + offset;
-            at(row, left);
-            const char *color = color_rule_count
-                ? entry_color(directory, directory->entries[entry_index]->d_name) : NULL;
-            if (color)
-                printf("\033[%sm", color);
-            if (index == depth - 1 && entry_index == directory->selected) {
-                printf("\033[7m");
-                printf("%-*s", visible_width, "");
-                at(row, left);
-            } else if (entry_index == directory->selected) {
-                printf("\033[1m");
-            }
-            entry_text(directory->entries[entry_index]->d_name,
-                       entry_index == directory->selected, skip, visible_width);
-            printf("\033[0m");
+            draw_entry(directory, entry_index, row, left, visible_width, index == depth - 1);
         }
-        if (child_row >= 0) {
-            int connector = column + width;
-            at(selected_row, connector);
-            fputs(selected_row == child_row ? "────" : selected_row < child_row ? "─┐" : "─┘", stdout);
-            if (selected_row != child_row) {
-                for (int row = selected_row - 1; row > child_row; --row) {
-                    at(row, connector + 1);
-                    fputs("│", stdout);
-                }
-                for (int row = selected_row + 1; row < child_row; ++row) {
-                    at(row, connector + 1);
-                    fputs("│", stdout);
-                }
-                at(child_row, connector + 1);
-                fputs(selected_row < child_row ? "└──" : "┌──", stdout);
-            }
-        }
+        if (child_row >= 0)
+            draw_link(column + width, selected_row, child_row, false);
         child_row = selected_row;
     }
     at(rows - 2, 0);
@@ -397,6 +423,58 @@ static void draw(const Directory *directories, size_t depth, const char *message
     text("Up/Down: select  Right: open  Left: back  q: quit", columns);
     printf("\033[0m");
     fflush(stdout);
+}
+
+static bool redraw_focus(const Directory *directories, size_t depth, int previous)
+{
+    struct winsize size;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_col < 12 || size.ws_row < 6)
+        return false;
+    const Directory *active = &directories[depth - 1];
+    int columns = size.ws_col;
+    int available = size.ws_row - 5;
+    int width = directory_width(active, columns - 2);
+    int column = (columns - width) / 2;
+    int old_first = first_visible(active, available, previous);
+    int first = first_visible(active, available, active->selected);
+    int visible = active->count < available ? active->count : available;
+    int top = active->count < available ? 3 + (available - visible) / 2 : 3;
+
+    if (depth > 1) {
+        const Directory *parent = &directories[depth - 2];
+        int parent_width = directory_width(parent, columns - 2);
+        int parent_column = column - parent_width - 4;
+        if (parent_column + parent_width > 0) {
+            int parent_row = focus_row(parent, available, parent->selected);
+            draw_link(column - 4, parent_row, focus_row(active, available, previous), true);
+        }
+    }
+    if (old_first == first) {
+        int old_row = top + previous - first;
+        int new_row = top + active->selected - first;
+        at(old_row, column);
+        printf("%-*s", width, "");
+        draw_entry(active, previous, old_row, column, width, true);
+        at(new_row, column);
+        printf("%-*s", width, "");
+        draw_entry(active, active->selected, new_row, column, width, true);
+    } else {
+        for (int offset = 0; offset < visible; ++offset) {
+            at(top + offset, column);
+            printf("%-*s", width, "");
+            draw_entry(active, first + offset, top + offset, column, width, true);
+        }
+    }
+    if (depth > 1) {
+        const Directory *parent = &directories[depth - 2];
+        if (column - 4 > 0 && column - 4 - directory_width(parent, columns - 2) < columns)
+            draw_link(column - 4, focus_row(parent, available, parent->selected),
+                      focus_row(active, available, active->selected), false);
+    }
+    at(size.ws_row - 2, 0);
+    fputs("\033[2K", stdout);
+    fflush(stdout);
+    return true;
 }
 
 static int read_key(void)
@@ -494,8 +572,13 @@ int main(int argc, char **argv)
             break;
         if (!key)
             continue;
+        char previous_message[sizeof(message)];
+        memcpy(previous_message, message, sizeof(message));
+        bool had_message = message[0] != '\0';
         message[0] = '\0';
+        size_t previous_depth = depth;
         Directory *current = &directories[depth - 1];
+        int previous = current->selected;
         if ((key == 'A' || key == 'k') && current->selected > 0)
             --current->selected;
         else if ((key == 'B' || key == 'j') && current->selected + 1 < current->count)
@@ -535,6 +618,16 @@ int main(int argc, char **argv)
                 }
             }
         }
+        if (key == 'A' || key == 'B' || key == 'j' || key == 'k') {
+            if (current->selected == previous && !had_message && !resized)
+                continue;
+            if (current->selected != previous && !resized &&
+                redraw_focus(directories, depth, previous))
+                continue;
+        }
+        if ((key == 'C' || key == 'D' || key == 'h' || key == 'l') &&
+            depth == previous_depth && strcmp(message, previous_message) == 0 && !resized)
+            continue;
         dirty = true;
     }
     for (size_t index = 0; index < depth; ++index)
