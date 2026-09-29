@@ -1,7 +1,9 @@
+#define _GNU_SOURCE
 #define _XOPEN_SOURCE 700
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <fnmatch.h>
 #include <limits.h>
 #include <locale.h>
@@ -13,9 +15,11 @@
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #include <wchar.h>
+#include <wordexp.h>
 
 typedef struct {
     char *path;
@@ -360,7 +364,7 @@ static void draw_link(int start, int end, int parent_row, int child_row, bool er
     fputs(erase ? "  " : parent_row < child_row ? "└─" : "┌─", stdout);
 }
 
-static void draw(const Directory *directories, size_t depth, const char *message)
+static void draw(const Directory *directories, size_t depth, const char *message, bool cd_mode)
 {
     struct winsize size;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || !size.ws_col || !size.ws_row)
@@ -432,7 +436,8 @@ static void draw(const Directory *directories, size_t depth, const char *message
         text(message, columns);
     at(rows - 1, 0);
     printf("\033[2m");
-    text("Up/Down: select  Right: open  Left: back  q: quit", columns);
+    text(cd_mode ? "Arrows browse  e edit  n/N new  r rename  d delete  c cd  q quit"
+                 : "Arrows browse  e edit  n/N new  r rename  d delete  q quit", columns);
     printf("\033[0m");
     fflush(stdout);
 }
@@ -494,6 +499,12 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
 
 static int read_key(void)
 {
+    static int pending_key;
+    if (pending_key) {
+        int key = pending_key;
+        pending_key = 0;
+        return key;
+    }
     fd_set input;
     FD_ZERO(&input);
     FD_SET(STDIN_FILENO, &input);
@@ -513,8 +524,12 @@ static int read_key(void)
     if (select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout) <= 0)
         return 27;
     unsigned char prefix;
-    if (read(STDIN_FILENO, &prefix, 1) != 1 || (prefix != '[' && prefix != 'O'))
+    if (read(STDIN_FILENO, &prefix, 1) != 1)
         return 0;
+    if (prefix != '[' && prefix != 'O') {
+        pending_key = prefix;
+        return 27;
+    }
     timeout.tv_usec = 50000;
     FD_ZERO(&input);
     FD_SET(STDIN_FILENO, &input);
@@ -525,14 +540,164 @@ static int read_key(void)
     return key >= 'A' && key <= 'D' ? key : 0;
 }
 
+static bool prompt_name(const char *label, const char *initial, char *name, size_t capacity)
+{
+    struct winsize size;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 6)
+        return false;
+    size_t length = strlen(initial);
+    if (length >= capacity)
+        return false;
+    memcpy(name, initial, length + 1);
+    bool dirty = true;
+    while (!stopped) {
+        if (dirty) {
+            at(size.ws_row - 2, 0);
+            fputs("\033[2K", stdout);
+            const char *visible_label = strlen(label) >= size.ws_col ? "Name: " : label;
+            int remaining = size.ws_col - (int)strlen(visible_label);
+            text(visible_label, size.ws_col);
+            int skip = text_width(name, INT_MAX - 4) - remaining;
+            clipped_text(name, skip > 0 ? skip : 0, remaining);
+            fflush(stdout);
+            dirty = false;
+        }
+        int key = read_key();
+        if (key == -1 || key == 27)
+            return false;
+        if (key == '\r' || key == '\n')
+            return length && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
+        if (key == 127 || key == 8) {
+            if (length) {
+                do {
+                    --length;
+                } while (length && ((unsigned char)name[length] & 0xc0) == 0x80);
+                name[length] = '\0';
+                dirty = true;
+            }
+        } else if (key >= 32 && key != 127 && key != '/' && length + 1 < capacity) {
+            name[length++] = (char)key;
+            name[length] = '\0';
+            dirty = true;
+        }
+    }
+    return false;
+}
+
+static bool confirm_remove(const char *name)
+{
+    struct winsize size;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 6)
+        return false;
+    at(size.ws_row - 2, 0);
+    fputs("\033[2K", stdout);
+    if (size.ws_col < 16) {
+        text("Remove? y/N", size.ws_col);
+    } else {
+        text("Remove ", 7);
+        text(name, size.ws_col - 15);
+        text("? [y/N]", 7);
+    }
+    fflush(stdout);
+    int key;
+    do {
+        key = read_key();
+    } while (!stopped && key == 0);
+    return key == 'y';
+}
+
+static int refresh_directory(Directory *directory, const char *focus)
+{
+    char *path = strdup(directory->path);
+    if (!path)
+        return -1;
+    Directory updated;
+    if (load_directory(path, &updated) < 0) {
+        free(path);
+        return -1;
+    }
+    updated.selected = directory->selected;
+    for (int index = 0; focus && index < updated.count; ++index)
+        if (strcmp(updated.entries[index]->d_name, focus) == 0) {
+            updated.selected = index;
+            break;
+        }
+    if (updated.selected >= updated.count)
+        updated.selected = updated.count ? updated.count - 1 : 0;
+    free_directory(directory);
+    *directory = updated;
+    return 0;
+}
+
+static int open_editor(const char *path, const struct termios *raw)
+{
+    const char *editor = getenv("EDITOR");
+    if (!editor || !*editor)
+        return -1;
+    wordexp_t words;
+    if (wordexp(editor, &words, WRDE_NOCMD | WRDE_UNDEF) != 0)
+        return -1;
+    char **arguments = calloc(words.we_wordc + 2, sizeof(*arguments));
+    if (!arguments || !words.we_wordc) {
+        free(arguments);
+        wordfree(&words);
+        return -1;
+    }
+    for (size_t index = 0; index < words.we_wordc; ++index)
+        arguments[index] = words.we_wordv[index];
+    arguments[words.we_wordc] = (char *)path;
+
+    fputs("\033[0m\033[?25h\033[?1049l", stdout);
+    fflush(stdout);
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_terminal) < 0) {
+        fputs("\033[?1049h\033[?25l", stdout);
+        fflush(stdout);
+        free(arguments);
+        wordfree(&words);
+        return -1;
+    }
+    terminal_active = false;
+    struct sigaction ignore = {.sa_handler = SIG_IGN};
+    struct sigaction previous_int;
+    sigemptyset(&ignore.sa_mask);
+    sigaction(SIGINT, &ignore, &previous_int);
+    pid_t child = fork();
+    if (child == 0) {
+        sigaction(SIGINT, &previous_int, NULL);
+        execvp(arguments[0], arguments);
+        perror(arguments[0]);
+        _exit(127);
+    }
+    int result = -1;
+    if (child > 0) {
+        int status = 0;
+        pid_t waited;
+        do {
+            waited = waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        if (waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0)
+            result = 0;
+    }
+    sigaction(SIGINT, &previous_int, NULL);
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, raw) == 0) {
+        terminal_active = true;
+        fputs("\033[?1049h\033[?25l", stdout);
+        fflush(stdout);
+    }
+    free(arguments);
+    wordfree(&words);
+    return result;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc > 2) {
-        fprintf(stderr, "Usage: %s [directory]\n", argv[0]);
+    bool cd_mode = argc > 1 && strcmp(argv[1], "--cd") == 0;
+    if (argc > (cd_mode ? 3 : 2)) {
+        fprintf(stderr, "Usage: %s [--cd] [directory]\n", argv[0]);
         return 1;
     }
     setlocale(LC_ALL, "");
-    char *path = realpath(argc == 2 ? argv[1] : ".", NULL);
+    char *path = realpath(argc > (cd_mode ? 2 : 1) ? argv[argc - 1] : ".", NULL);
     if (!path) {
         perror("directory");
         return 1;
@@ -544,10 +709,28 @@ int main(int argc, char **argv)
         free(path);
         return 1;
     }
+    int output_fd = -1;
+    if (cd_mode) {
+        output_fd = dup(STDOUT_FILENO);
+        int terminal_fd = open("/dev/tty", O_WRONLY);
+        if (output_fd < 0 || terminal_fd < 0 || dup2(terminal_fd, STDOUT_FILENO) < 0) {
+            perror("terminal");
+            if (output_fd >= 0)
+                close(output_fd);
+            if (terminal_fd >= 0)
+                close(terminal_fd);
+            free_directory(directories);
+            free(directories);
+            return 1;
+        }
+        close(terminal_fd);
+    }
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) || tcgetattr(STDIN_FILENO, &original_terminal) < 0) {
         fprintf(stderr, "An interactive terminal is required.\n");
         free_directory(directories);
         free(directories);
+        if (output_fd >= 0)
+            close(output_fd);
         return 1;
     }
     struct termios raw = original_terminal;
@@ -560,6 +743,8 @@ int main(int argc, char **argv)
         perror("tcsetattr");
         free_directory(directories);
         free(directories);
+        if (output_fd >= 0)
+            close(output_fd);
         return 1;
     }
     terminal_active = true;
@@ -574,11 +759,12 @@ int main(int argc, char **argv)
 
     size_t depth = 1;
     size_t capacity = 1;
+    char *chosen_directory = NULL;
     char message[256] = "";
     bool dirty = true;
     while (!stopped) {
         if (dirty || resized) {
-            draw(directories, depth, message);
+            draw(directories, depth, message, cd_mode);
             dirty = false;
             resized = 0;
         }
@@ -598,6 +784,86 @@ int main(int argc, char **argv)
             --current->selected;
         else if ((key == 'B' || key == 'j') && current->selected + 1 < current->count)
             ++current->selected;
+        else if (key == 'n' || key == 'N') {
+            char name[256];
+            if (prompt_name(key == 'n' ? "New file: " : "New directory: ", "", name, sizeof(name))) {
+                char *path = child_path(current->path, name);
+                if (!path) {
+                    snprintf(message, sizeof(message), "Out of memory");
+                } else {
+                    int result;
+                    if (key == 'N') {
+                        result = mkdir(path, 0777);
+                    } else {
+                        int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+                        result = file < 0 ? -1 : close(file);
+                    }
+                    if (result < 0)
+                        snprintf(message, sizeof(message), "Cannot create: %s", strerror(errno));
+                    else if (refresh_directory(current, name) < 0)
+                        snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
+                    free(path);
+                }
+            }
+        }
+        else if (key == 'r' && current->count) {
+            const char *old_name = current->entries[current->selected]->d_name;
+            char name[256];
+            if (prompt_name("Rename: ", old_name, name, sizeof(name)) && strcmp(name, old_name) != 0) {
+                char *old_path = child_path(current->path, old_name);
+                char *new_path = child_path(current->path, name);
+                if (!old_path || !new_path) {
+                    snprintf(message, sizeof(message), "Out of memory");
+                } else if (renameat2(AT_FDCWD, old_path, AT_FDCWD, new_path, RENAME_NOREPLACE) < 0) {
+                    snprintf(message, sizeof(message), "Cannot rename: %s", strerror(errno));
+                } else if (refresh_directory(current, name) < 0) {
+                    snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
+                }
+                free(old_path);
+                free(new_path);
+            }
+        }
+        else if (key == 'd' && current->count &&
+                 confirm_remove(current->entries[current->selected]->d_name)) {
+            char *path = child_path(current->path, current->entries[current->selected]->d_name);
+            if (!path) {
+                snprintf(message, sizeof(message), "Out of memory");
+            } else {
+                struct stat info;
+                if (lstat(path, &info) < 0 ||
+                    (S_ISDIR(info.st_mode) ? rmdir(path) : unlink(path)) < 0)
+                    snprintf(message, sizeof(message), "Cannot remove: %s", strerror(errno));
+                else if (refresh_directory(current, NULL) < 0)
+                    snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
+                free(path);
+            }
+        }
+        else if ((key == 'e' || key == '\r' || key == '\n') && current->count) {
+            const char *name = current->entries[current->selected]->d_name;
+            char *path = child_path(current->path, name);
+            if (!path) {
+                snprintf(message, sizeof(message), "Out of memory");
+            } else {
+                if (open_editor(path, &raw) < 0)
+                    snprintf(message, sizeof(message), "Editor unavailable or exited with an error");
+                if (!terminal_active)
+                    stopped = 1;
+                if (refresh_directory(current, name) < 0)
+                    snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
+                free(path);
+            }
+        }
+        else if (key == 'c' && cd_mode && current->count) {
+            char *candidate = child_path(current->path, current->entries[current->selected]->d_name);
+            struct stat info;
+            if (candidate && stat(candidate, &info) == 0 && S_ISDIR(info.st_mode))
+                chosen_directory = realpath(candidate, NULL);
+            if (!chosen_directory)
+                snprintf(message, sizeof(message), "Select a directory to change into");
+            free(candidate);
+            if (chosen_directory)
+                break;
+        }
         else if ((key == 'D' || key == 'h') && depth > 1) {
             free_directory(current);
             --depth;
@@ -650,5 +916,10 @@ int main(int argc, char **argv)
     free(directories);
     free(color_rules);
     free(color_storage);
-    return 0;
+    restore_terminal();
+    int result = chosen_directory && dprintf(output_fd, "%s\n", chosen_directory) < 0 ? 1 : 0;
+    free(chosen_directory);
+    if (output_fd >= 0)
+        close(output_fd);
+    return result;
 }
