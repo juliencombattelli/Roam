@@ -330,23 +330,34 @@ static void draw_entry(const Directory *directory, int index, int row, int colum
     printf("\033[0m");
 }
 
-static void draw_link(int column, int parent_row, int child_row, bool erase)
+static int link_start(const Directory *directory, int column, int width)
 {
-    at(parent_row, column);
-    fputs(erase ? "    " : parent_row == child_row ? "────" :
-          parent_row < child_row ? "─┐" : "─┘", stdout);
+    const char *name = directory->entries[directory->selected]->d_name;
+    int start = column + 1 + text_width(name, width - 1);
+    return start < 0 ? 0 : start;
+}
+
+static void draw_link(int start, int end, int parent_row, int child_row, bool erase)
+{
+    if (start > end - 2)
+        start = end - 2;
+    at(parent_row, start);
+    int bend = end - 2;
+    for (int column = start; column < (parent_row == child_row ? end : bend); ++column)
+        fputs(erase ? " " : "─", stdout);
     if (parent_row == child_row)
         return;
+    fputs(erase ? " " : parent_row < child_row ? "┐" : "┘", stdout);
     for (int row = parent_row - 1; row > child_row; --row) {
-        at(row, column + 1);
+        at(row, bend);
         fputs(erase ? " " : "│", stdout);
     }
     for (int row = parent_row + 1; row < child_row; ++row) {
-        at(row, column + 1);
+        at(row, bend);
         fputs(erase ? " " : "│", stdout);
     }
-    at(child_row, column + 1);
-    fputs(erase ? "   " : parent_row < child_row ? "└──" : "┌──", stdout);
+    at(child_row, bend);
+    fputs(erase ? "  " : parent_row < child_row ? "└─" : "┌─", stdout);
 }
 
 static void draw(const Directory *directories, size_t depth, const char *message)
@@ -412,7 +423,8 @@ static void draw(const Directory *directories, size_t depth, const char *message
             draw_entry(directory, entry_index, row, left, visible_width, index == depth - 1);
         }
         if (child_row >= 0)
-            draw_link(column + width, selected_row, child_row, false);
+            draw_link(link_start(directory, column, width), column + width + 4,
+                      selected_row, child_row, false);
         child_row = selected_row;
     }
     at(rows - 2, 0);
@@ -446,7 +458,8 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
         int parent_column = column - parent_width - 4;
         if (parent_column + parent_width > 0) {
             int parent_row = focus_row(parent, available, parent->selected);
-            draw_link(column - 4, parent_row, focus_row(active, available, previous), true);
+            draw_link(link_start(parent, parent_column, parent_width), column,
+                      parent_row, focus_row(active, available, previous), true);
         }
     }
     if (old_first == first) {
@@ -468,7 +481,9 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
     if (depth > 1) {
         const Directory *parent = &directories[depth - 2];
         if (column - 4 > 0 && column - 4 - directory_width(parent, columns - 2) < columns)
-            draw_link(column - 4, focus_row(parent, available, parent->selected),
+            draw_link(link_start(parent, column - directory_width(parent, columns - 2) - 4,
+                                 directory_width(parent, columns - 2)), column,
+                      focus_row(parent, available, parent->selected),
                       focus_row(active, available, active->selected), false);
     }
     at(size.ws_row - 2, 0);
