@@ -128,6 +128,41 @@ static void text(const char *source, int width)
     clipped_text(source, 0, width);
 }
 
+static int text_width(const char *source, int limit)
+{
+    mbstate_t state = {0};
+    int width = 0;
+    while (*source && width < limit) {
+        wchar_t character;
+        size_t bytes = mbrtowc(&character, source, MB_CUR_MAX, &state);
+        if (bytes == (size_t)-1 || bytes == (size_t)-2) {
+            bytes = 1;
+            memset(&state, 0, sizeof(state));
+            width++;
+        } else {
+            int cells = wcwidth(character);
+            width += cells < 0 || character == 127 || character == 27 ? 1 : cells;
+        }
+        source += bytes;
+    }
+    return width > limit ? limit : width;
+}
+
+static int directory_width(const Directory *directory, int limit)
+{
+    const char *title = strrchr(directory->path, '/');
+    title = title && title[1] ? title + 1 : directory->path;
+    int width = text_width(title, limit);
+    if (!directory->count && width < 7)
+        width = 7;
+    for (int index = 0; index < directory->count && width < limit; ++index) {
+        int entry_width = 1 + text_width(directory->entries[index]->d_name, limit - 1);
+        if (entry_width > width)
+            width = entry_width;
+    }
+    return width < 2 ? 2 : width;
+}
+
 static void entry_text(const char *name, bool selected, int skip, int width)
 {
     if (skip == 0) {
@@ -160,12 +195,16 @@ static void draw(const Directory *directories, size_t depth, const char *message
     text(active->path, columns);
     printf("\033[0m");
 
-    int width = columns < 42 ? columns - 2 : 38;
-    int center = (columns - width) / 2;
     int available = rows - 5;
-    for (size_t index = 0; index < depth; ++index) {
+    long position = 0;
+    for (size_t step = depth; step > 0; --step) {
+        size_t index = step - 1;
         const Directory *directory = &directories[index];
-        long position = (long)center - (long)(depth - 1 - index) * (width + 2);
+        int width = directory_width(directory, columns - 2);
+        if (step == depth)
+            position = (columns - width) / 2;
+        else
+            position -= width + 2;
         if (position + width <= 0 || position >= columns)
             continue;
         int column = (int)position;
