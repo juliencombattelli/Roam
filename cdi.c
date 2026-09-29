@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fnmatch.h>
 #include <locale.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -22,10 +23,18 @@ typedef struct {
     int selected;
 } Directory;
 
+typedef struct {
+    char *key;
+    char *sgr;
+} ColorRule;
+
 static struct termios original_terminal;
 static bool terminal_active;
 static volatile sig_atomic_t stopped;
 static volatile sig_atomic_t resized;
+static ColorRule *color_rules;
+static size_t color_rule_count;
+static char *color_storage;
 
 static void restore_terminal(void)
 {
@@ -75,6 +84,111 @@ static char *child_path(const char *parent, const char *name)
     if (path)
         snprintf(path, length, "%s%s%s", parent, strcmp(parent, "/") == 0 ? "" : "/", name);
     return path;
+}
+
+static void load_colors(void)
+{
+    const char *setting = getenv("LS_COLORS");
+    if (!setting || !*setting)
+        return;
+    color_storage = strdup(setting);
+    if (!color_storage)
+        return;
+    size_t capacity = 1;
+    for (const char *cursor = setting; *cursor; ++cursor)
+        if (*cursor == ':')
+            ++capacity;
+    color_rules = calloc(capacity, sizeof(*color_rules));
+    if (!color_rules)
+        return;
+    char *save = NULL;
+    for (char *part = strtok_r(color_storage, ":", &save); part;
+         part = strtok_r(NULL, ":", &save)) {
+        char *separator = strchr(part, '=');
+        if (!separator || !separator[1])
+            continue;
+        *separator++ = '\0';
+        bool valid = true;
+        for (const char *cursor = separator; *cursor; ++cursor)
+            if ((*cursor < '0' || *cursor > '9') && *cursor != ';')
+                valid = false;
+        if (valid || (strcmp(part, "ln") == 0 && strcmp(separator, "target") == 0))
+            color_rules[color_rule_count++] = (ColorRule){part, separator};
+    }
+}
+
+static const char *color_rule(const char *key)
+{
+    const char *color = NULL;
+    for (size_t index = 0; index < color_rule_count; ++index)
+        if (strcmp(color_rules[index].key, key) == 0)
+            color = color_rules[index].sgr;
+    return color;
+}
+
+static const char *entry_color(const Directory *directory, const char *name)
+{
+    char *path = child_path(directory->path, name);
+    if (!path)
+        return NULL;
+    struct stat info;
+    const char *color = NULL;
+    if (lstat(path, &info) < 0) {
+        color = color_rule("mi");
+        free(path);
+        return color;
+    }
+    if (S_ISLNK(info.st_mode)) {
+        const char *link_color = color_rule("ln");
+        if (stat(path, &info) < 0) {
+            color = color_rule("or");
+            if (!color && link_color && strcmp(link_color, "target") != 0)
+                color = link_color;
+        } else if (link_color && strcmp(link_color, "target") == 0) {
+            color = NULL;
+        } else {
+            color = link_color;
+            free(path);
+            return color;
+        }
+        if (color || !link_color || strcmp(link_color, "target") != 0) {
+            free(path);
+            return color;
+        }
+    }
+    if (S_ISDIR(info.st_mode)) {
+        if ((info.st_mode & S_ISVTX) && (info.st_mode & S_IWOTH))
+            color = color_rule("tw");
+        else if (info.st_mode & S_IWOTH)
+            color = color_rule("ow");
+        else if (info.st_mode & S_ISVTX)
+            color = color_rule("st");
+        if (!color)
+            color = color_rule("di");
+    } else if (S_ISREG(info.st_mode)) {
+        if (info.st_mode & S_ISUID)
+            color = color_rule("su");
+        else if (info.st_mode & S_ISGID)
+            color = color_rule("sg");
+        else if (info.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+            color = color_rule("ex");
+        else
+            color = color_rule("fi");
+        for (size_t index = 0; index < color_rule_count; ++index)
+            if (color_rules[index].key[0] == '*' &&
+                fnmatch(color_rules[index].key, name, 0) == 0)
+                color = color_rules[index].sgr;
+    } else if (S_ISFIFO(info.st_mode)) {
+        color = color_rule("pi");
+    } else if (S_ISSOCK(info.st_mode)) {
+        color = color_rule("so");
+    } else if (S_ISBLK(info.st_mode)) {
+        color = color_rule("bd");
+    } else if (S_ISCHR(info.st_mode)) {
+        color = color_rule("cd");
+    }
+    free(path);
+    return color;
 }
 
 static void at(int row, int column)
@@ -241,6 +355,10 @@ static void draw(const Directory *directories, size_t depth, const char *message
             int entry_index = first + offset;
             int row = top + offset;
             at(row, left);
+            const char *color = color_rule_count
+                ? entry_color(directory, directory->entries[entry_index]->d_name) : NULL;
+            if (color)
+                printf("\033[%sm", color);
             if (index == depth - 1 && entry_index == directory->selected) {
                 printf("\033[7m");
                 printf("%-*s", visible_width, "");
@@ -359,6 +477,7 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGHUP, &action, NULL);
     printf("\033[?1049h\033[?25l");
+    load_colors();
 
     size_t depth = 1;
     size_t capacity = 1;
@@ -421,5 +540,7 @@ int main(int argc, char **argv)
     for (size_t index = 0; index < depth; ++index)
         free_directory(&directories[index]);
     free(directories);
+    free(color_rules);
+    free(color_storage);
     return 0;
 }

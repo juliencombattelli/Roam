@@ -13,4 +13,6 @@ starts in the current working directory. Run it from an interactive terminal.
 - `q` or Ctrl-C: quit and restore the previous screen
 
 Entries are sorted by name. Files can be selected, but only directories can be
-opened. The browser includes hidden entries other than `.` and `..`.
+opened. The browser includes hidden entries other than `.` and `..`. Entry colors
+follow `LS_COLORS` when it is set, including file types and filename patterns;
+without it, entries use the terminal's default colors.
