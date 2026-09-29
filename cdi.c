@@ -197,6 +197,7 @@ static void draw(const Directory *directories, size_t depth, const char *message
 
     int available = rows - 5;
     long position = 0;
+    int child_row = -1;
     for (size_t step = depth; step > 0; --step) {
         size_t index = step - 1;
         const Directory *directory = &directories[index];
@@ -204,9 +205,11 @@ static void draw(const Directory *directories, size_t depth, const char *message
         if (step == depth)
             position = (columns - width) / 2;
         else
-            position -= width + 2;
-        if (position + width <= 0 || position >= columns)
+            position -= width + 4;
+        if (position + width <= 0 || position >= columns) {
+            child_row = -1;
             continue;
+        }
         int column = (int)position;
         int left = column < 0 ? 0 : column;
         int skip = 0;
@@ -229,6 +232,7 @@ static void draw(const Directory *directories, size_t depth, const char *message
             first = 0;
         int visible = directory->count < available ? directory->count : available;
         int top = directory->count < available ? 3 + (available - visible) / 2 : 3;
+        int selected_row = directory->count ? top + directory->selected - first : 3 + available / 2;
         if (!directory->count) {
             at(3 + available / 2, left);
             clipped_text("(empty)", skip, visible_width);
@@ -248,6 +252,24 @@ static void draw(const Directory *directories, size_t depth, const char *message
                        entry_index == directory->selected, skip, visible_width);
             printf("\033[0m");
         }
+        if (child_row >= 0) {
+            int connector = column + width;
+            at(selected_row, connector);
+            fputs(selected_row == child_row ? "────" : selected_row < child_row ? "─┐" : "─┘", stdout);
+            if (selected_row != child_row) {
+                for (int row = selected_row - 1; row > child_row; --row) {
+                    at(row, connector + 1);
+                    fputs("│", stdout);
+                }
+                for (int row = selected_row + 1; row < child_row; ++row) {
+                    at(row, connector + 1);
+                    fputs("│", stdout);
+                }
+                at(child_row, connector + 1);
+                fputs(selected_row < child_row ? "└──" : "┌──", stdout);
+            }
+        }
+        child_row = selected_row;
     }
     at(rows - 2, 0);
     if (*message)
