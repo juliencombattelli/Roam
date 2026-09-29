@@ -1,6 +1,6 @@
 # Demo tree
 
-Browse with `./cdi fixtures/demo-tree`.
+Browse with `./roam fixtures/demo-tree`.
 
 The tree includes nested directories, a long directory name, a name containing
 a space, a hidden entry, and several file extensions for navigation and color

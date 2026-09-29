@@ -1,10 +1,10 @@
-# cdi
+# roam
 
-A small Linux terminal directory browser written in C11. It opens the alternate
+A small Linux terminal file explorer written in C11. It opens the alternate
 screen, centers the active directory column, and keeps parent directories visible
 to its left when space allows. No external libraries are needed.
 
-Build with `make`, then run `./cdi [directory]`. Without a directory argument it
+Build with `make`, then run `./roam [directory]`. Without a directory argument it
 starts in the current working directory. Run it from an interactive terminal.
 Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u NONE'`).
 
@@ -17,13 +17,13 @@ Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u N
 - `d`: remove the selected entry after confirmation (directories must be empty)
 - `q` or Ctrl-C: quit and restore the previous screen
 
-To change the calling shell's directory, put `cdi` on your `PATH` and add this
-function to your shell configuration:
+To change the calling shell's directory, put `roam` on your `PATH` and add this
+`cdi` function to your shell configuration:
 
 ```sh
 cdi() {
 	local destination
-	destination="$(command cdi --cd "$@")" || return
+	destination="$(command roam --cd "$@")" || return
 	if [ -n "$destination" ]; then
 		builtin cd -- "$destination"
 	fi
