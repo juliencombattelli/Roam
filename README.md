@@ -4,6 +4,8 @@ A small Linux terminal file explorer written in C11. It opens the alternate
 screen, centers the active directory column, and keeps parent directories visible
 to its left when space allows. No external libraries are needed.
 
+![roam terminal file explorer](screenshot.png)
+
 Build with `make`, then run `./roam [directory]`. Without a directory argument it
 starts in the current working directory. Run it from an interactive terminal.
 Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u NONE'`).
