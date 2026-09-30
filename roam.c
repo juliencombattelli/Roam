@@ -682,7 +682,8 @@ static bool prompt_name_input(const char *label, const char *initial, char *name
                 name[length] = '\0';
                 dirty = true;
             }
-        } else if (key >= 32 && key != 127 && key != '/' && length + 1 < capacity) {
+        } else if (key >= 32 && key < KEY_SHIFT_SPACE && key != 127 &&
+                 key != '/' && length + 1 < capacity) {
             name[length++] = (char)key;
             name[length] = '\0';
             dirty = true;
