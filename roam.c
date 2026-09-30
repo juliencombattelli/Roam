@@ -158,8 +158,12 @@ static int load_directory(char *path, Directory *directory)
         if (entry_width > width)
             width = entry_width;
     }
-    *directory = (Directory){.path = path, .entries = entries, .count = count,
-                             .width = width < 2 ? 2 : width};
+    *directory = (Directory){
+        .path = path,
+        .entries = entries,
+        .count = count,
+        .width = width < 2 ? 2 : width,
+    };
     return 0;
 }
 
@@ -825,17 +829,23 @@ static int load_parent_directory(const Directory *current, Directory *parent)
     return 0;
 }
 
-static int open_editor(const char *path, const struct termios *raw)
+static int open_editor(const char *path)
 {
     const char *editor = getenv("EDITOR");
     if (!editor || !*editor)
         return -1;
+    struct termios raw;
+    if (tcgetattr(STDIN_FILENO, &raw) < 0)
+        return -1;
     wordexp_t words;
     if (wordexp(editor, &words, WRDE_NOCMD | WRDE_UNDEF) != 0)
         return -1;
+    if (!words.we_wordc) {
+        wordfree(&words);
+        return -1;
+    }
     char **arguments = calloc(words.we_wordc + 2, sizeof(*arguments));
-    if (!arguments || !words.we_wordc) {
-        free(arguments);
+    if (!arguments) {
         wordfree(&words);
         return -1;
     }
@@ -878,7 +888,7 @@ static int open_editor(const char *path, const struct termios *raw)
             result = 0;
     }
     sigaction(SIGINT, &previous_int, NULL);
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, raw) == 0) {
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0) {
         terminal_active = true;
         term_enter_alternate_buffer();
         fflush(stdout);
@@ -888,10 +898,12 @@ static int open_editor(const char *path, const struct termios *raw)
     return result;
 }
 
-static void create_entry(Directory *current, int key, char *message, size_t capacity)
+typedef enum { ENTRY_FILE, ENTRY_DIRECTORY } EntryType;
+
+static void create_entry(Directory *current, EntryType type, char *message, size_t capacity)
 {
     char name[256];
-    if (!prompt_name(key == 'n' ? "New file: " : "New directory: ", "", name, sizeof(name)))
+    if (!prompt_name(type == ENTRY_DIRECTORY ? "New directory: " : "New file: ", "", name, sizeof(name)))
         return;
     char *path = child_path(current->path, name);
     if (!path) {
@@ -899,7 +911,7 @@ static void create_entry(Directory *current, int key, char *message, size_t capa
         return;
     }
     int result;
-    if (key == 'N') {
+    if (type == ENTRY_DIRECTORY) {
         result = mkdir(path, 0777);
     } else {
         int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
@@ -948,8 +960,7 @@ static void remove_entry(Directory *current, char *message, size_t capacity)
     free(path);
 }
 
-static void edit_entry(Directory *current, const struct termios *raw,
-                       char *message, size_t capacity)
+static void edit_entry(Directory *current, char *message, size_t capacity)
 {
     const char *name = current->entries[current->selected]->d_name;
     char *path = child_path(current->path, name);
@@ -957,7 +968,7 @@ static void edit_entry(Directory *current, const struct termios *raw,
         snprintf(message, capacity, "Out of memory");
         return;
     }
-    if (open_editor(path, raw) < 0)
+    if (open_editor(path) < 0)
         snprintf(message, capacity, "Editor unavailable or exited with an error");
     if (!terminal_active)
         stopped = 1;
@@ -1151,13 +1162,14 @@ int main(int argc, char **argv)
             }
         }
         else if (key == 'n' || key == 'N')
-            create_entry(current, key, message, sizeof(message));
+            create_entry(current, key == 'N' ? ENTRY_DIRECTORY : ENTRY_FILE,
+                         message, sizeof(message));
         else if (key == 'r' && current->count)
             rename_entry(current, message, sizeof(message));
         else if (key == 'd' && current->count)
             remove_entry(current, message, sizeof(message));
         else if ((key == 'e' || key == '\r' || key == '\n') && current->count)
-            edit_entry(current, &raw, message, sizeof(message));
+            edit_entry(current, message, sizeof(message));
         else if (key == 'c' && cd_mode && current->count) {
             chosen_directory = choose_directory(current);
             if (!chosen_directory)
