@@ -370,8 +370,6 @@ static void draw_entry(const Directory *directory, int index, int row, int colum
         term_set_color(color);
     if (active && index == directory->selected) {
         term_reverse_video();
-        printf("%-*s", width, "");
-        term_move_cursor(row, column);
     } else if (index == directory->selected) {
         term_bold();
     }
