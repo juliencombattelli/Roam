@@ -331,17 +331,6 @@ static int directory_width(const Directory *directory, int limit)
     return directory->width < limit ? directory->width : limit;
 }
 
-static void entry_text(const char *name, bool selected, int skip, int width)
-{
-    if (skip == 0) {
-        putchar(selected ? '>' : ' ');
-        --width;
-    } else {
-        --skip;
-    }
-    clipped_text(name, skip, width);
-}
-
 static int first_visible(const Directory *directory, int available, int selected)
 {
     int first = directory->count > available ? selected - available / 2 : 0;
@@ -364,6 +353,7 @@ static void draw_entry(const Directory *directory, int index, int row, int colum
                        int width, bool active)
 {
     term_move_cursor(row, column);
+    fputs(index == directory->selected ? "►" : " ", stdout);
     const char *color = color_rule_count
         ? entry_color(directory, directory->entries[index]->d_name) : NULL;
     if (color)
@@ -373,7 +363,7 @@ static void draw_entry(const Directory *directory, int index, int row, int colum
     } else if (index == directory->selected) {
         term_bold();
     }
-    entry_text(directory->entries[index]->d_name, index == directory->selected, 0, width);
+    clipped_text(directory->entries[index]->d_name, 0, width - 1);
     term_reset_style();
 }
 
