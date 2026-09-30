@@ -13,6 +13,7 @@ Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u N
 - Up/Down (or `k`/`j`): select an entry
 - Right (or `l`): open the selected directory
 - Left (or `h`): return to the parent column
+- Space: toggle child previews without moving focus; previews follow selection and navigation
 - Enter (or `e`): open the selected file or directory with `$EDITOR`
 - `n` / `N`: create a file / directory in the current directory
 - `r`: rename the selected entry (never overwrites another entry)

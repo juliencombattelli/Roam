@@ -409,7 +409,8 @@ static void draw_link(int start, int end, int parent_row, int child_row, bool er
     fputs(erase ? "  " : parent_row < child_row ? "└─" : "┌─", stdout);
 }
 
-static void draw(const Directory *directories, size_t depth, const char *message, bool cd_mode)
+static void draw(const Directory *directories, size_t depth, const Directory *preview,
+                 const char *message, bool cd_mode)
 {
     struct winsize size;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || !size.ws_col || !size.ws_row)
@@ -433,11 +434,14 @@ static void draw(const Directory *directories, size_t depth, const char *message
     int available = rows - 5;
     long position = 0;
     int child_row = -1;
-    for (size_t step = depth; step > 0; --step) {
+    for (size_t step = depth + (preview != NULL); step > 0; --step) {
         size_t index = step - 1;
-        const Directory *directory = &directories[index];
+        const Directory *directory = step > depth ? preview : &directories[index];
         int width = directory_width(directory, columns - 2);
-        if (step == depth)
+        if (step > depth)
+            position = (columns - directory_width(active, columns - 2)) / 2 +
+                       directory_width(active, columns - 2) + 4;
+        else if (step == depth)
             position = (columns - width) / 2;
         else
             position -= width + 4;
@@ -481,8 +485,8 @@ static void draw(const Directory *directories, size_t depth, const char *message
         text(message, columns);
     term_move_cursor(rows - 1, 0);
     term_dim();
-    text(cd_mode ? "Arrows browse  e edit  n/N new  r rename  d delete  c cd  q quit"
-                 : "Arrows browse  e edit  n/N new  r rename  d delete  q quit", columns);
+    text(cd_mode ? "Arrows browse  Space preview  e edit  n/N new  r rename  d delete  c cd  q quit"
+                 : "Arrows browse  Space preview  e edit  n/N new  r rename  d delete  q quit", columns);
     term_reset_style();
     fflush(stdout);
 }
@@ -674,6 +678,23 @@ static int refresh_directory(Directory *directory, const char *focus)
     return 0;
 }
 
+static void refresh_preview(Directory *preview, const Directory *current)
+{
+    if (preview->path)
+        free_directory(preview);
+    *preview = (Directory){0};
+    if (!current->count)
+        return;
+    char *child = child_path(current->path, current->entries[current->selected]->d_name);
+    if (!child)
+        return;
+    struct stat info;
+    if (stat(child, &info) == 0 && S_ISDIR(info.st_mode) &&
+        load_directory(child, preview) == 0)
+        return;
+    free(child);
+}
+
 static int open_editor(const char *path, const struct termios *raw)
 {
     const char *editor = getenv("EDITOR");
@@ -804,12 +825,14 @@ int main(int argc, char **argv)
 
     size_t depth = 1;
     size_t capacity = 1;
+    Directory preview = {0};
+    bool preview_enabled = false;
     char *chosen_directory = NULL;
     char message[256] = "";
     bool dirty = true;
     while (!stopped) {
         if (dirty || resized) {
-            draw(directories, depth, message, cd_mode);
+            draw(directories, depth, preview.path ? &preview : NULL, message, cd_mode);
             dirty = false;
             resized = 0;
         }
@@ -829,6 +852,13 @@ int main(int argc, char **argv)
             --current->selected;
         else if ((key == 'B' || key == 'j') && current->selected + 1 < current->count)
             ++current->selected;
+        else if (key == ' ') {
+            preview_enabled = !preview_enabled;
+            if (!preview_enabled && preview.path) {
+                free_directory(&preview);
+                preview = (Directory){0};
+            }
+        }
         else if (key == 'n' || key == 'N') {
             char name[256];
             if (prompt_name(key == 'n' ? "New file: " : "New directory: ", "", name, sizeof(name))) {
@@ -944,18 +974,24 @@ int main(int argc, char **argv)
                 }
             }
         }
+        if (preview_enabled) {
+            refresh_preview(&preview, &directories[depth - 1]);
+            dirty = true;
+        }
         if (key == 'A' || key == 'B' || key == 'j' || key == 'k') {
-            if (current->selected == previous && !had_message && !resized)
+            if (current->selected == previous && !had_message && !resized && !dirty)
                 continue;
-            if (current->selected != previous && !resized &&
+            if (current->selected != previous && !resized && !dirty &&
                 redraw_focus(directories, depth, previous))
                 continue;
         }
         if ((key == 'C' || key == 'D' || key == 'h' || key == 'l') &&
-            depth == previous_depth && strcmp(message, previous_message) == 0 && !resized)
+            depth == previous_depth && strcmp(message, previous_message) == 0 && !resized && !dirty)
             continue;
         dirty = true;
     }
+    if (preview.path)
+        free_directory(&preview);
     for (size_t index = 0; index < depth; ++index)
         free_directory(&directories[index]);
     free(directories);
