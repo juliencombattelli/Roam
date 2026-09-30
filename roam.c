@@ -42,10 +42,60 @@ static ColorRule *color_rules;
 static size_t color_rule_count;
 static char *color_storage;
 
+static void term_exit_alternate_buffer(void)
+{
+    fputs("\033[0m\033[?25h\033[?1049l", stdout);
+}
+
+static void term_enter_alternate_buffer(void)
+{
+    fputs("\033[?1049h\033[?25l", stdout);
+}
+
+static void term_move_cursor(int row, int column)
+{
+    printf("\033[%d;%dH", row + 1, column + 1);
+}
+
+static void term_clear_screen(void)
+{
+    fputs("\033[H\033[2J", stdout);
+}
+
+static void term_clear_line(void)
+{
+    fputs("\033[2K", stdout);
+}
+
+static void term_set_color(const char *color)
+{
+    printf("\033[%sm", color);
+}
+
+static void term_reset_style(void)
+{
+    fputs("\033[0m", stdout);
+}
+
+static void term_bold(void)
+{
+    fputs("\033[1m", stdout);
+}
+
+static void term_dim(void)
+{
+    fputs("\033[2m", stdout);
+}
+
+static void term_reverse_video(void)
+{
+    fputs("\033[7m", stdout);
+}
+
 static void restore_terminal(void)
 {
     if (terminal_active) {
-        printf("\033[0m\033[?25h\033[?1049l");
+        term_exit_alternate_buffer();
         fflush(stdout);
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_terminal);
         terminal_active = false;
@@ -210,11 +260,6 @@ static const char *entry_color(const Directory *directory, const char *name)
     return color;
 }
 
-static void at(int row, int column)
-{
-    printf("\033[%d;%dH", row + 1, column + 1);
-}
-
 static void clipped_text(const char *source, int skip, int width)
 {
     mbstate_t state = {0};
@@ -318,20 +363,20 @@ static int focus_row(const Directory *directory, int available, int selected)
 static void draw_entry(const Directory *directory, int index, int row, int column,
                        int width, bool active)
 {
-    at(row, column);
+    term_move_cursor(row, column);
     const char *color = color_rule_count
         ? entry_color(directory, directory->entries[index]->d_name) : NULL;
     if (color)
-        printf("\033[%sm", color);
+        term_set_color(color);
     if (active && index == directory->selected) {
-        printf("\033[7m");
+        term_reverse_video();
         printf("%-*s", width, "");
-        at(row, column);
+        term_move_cursor(row, column);
     } else if (index == directory->selected) {
-        printf("\033[1m");
+        term_bold();
     }
     entry_text(directory->entries[index]->d_name, index == directory->selected, 0, width);
-    printf("\033[0m");
+    term_reset_style();
 }
 
 static int link_start(const Directory *directory, int column, int width)
@@ -345,7 +390,7 @@ static void draw_link(int start, int end, int parent_row, int child_row, bool er
 {
     if (start > end - 2)
         start = end - 2;
-    at(parent_row, start);
+    term_move_cursor(parent_row, start);
     int bend = end - 2;
     for (int column = start; column < (parent_row == child_row ? end : bend); ++column)
         fputs(erase ? " " : "─", stdout);
@@ -353,14 +398,14 @@ static void draw_link(int start, int end, int parent_row, int child_row, bool er
         return;
     fputs(erase ? " " : parent_row < child_row ? "┐" : "┘", stdout);
     for (int row = parent_row - 1; row > child_row; --row) {
-        at(row, bend);
+        term_move_cursor(row, bend);
         fputs(erase ? " " : "│", stdout);
     }
     for (int row = parent_row + 1; row < child_row; ++row) {
-        at(row, bend);
+        term_move_cursor(row, bend);
         fputs(erase ? " " : "│", stdout);
     }
-    at(child_row, bend);
+    term_move_cursor(child_row, bend);
     fputs(erase ? "  " : parent_row < child_row ? "└─" : "┌─", stdout);
 }
 
@@ -371,19 +416,19 @@ static void draw(const Directory *directories, size_t depth, const char *message
         return;
     int columns = size.ws_col;
     int rows = size.ws_row;
-    printf("\033[H\033[2J");
+    term_clear_screen();
     if (columns < 12 || rows < 6) {
-        at(0, 0);
+        term_move_cursor(0, 0);
         text("Terminal too small", columns);
         fflush(stdout);
         return;
     }
 
     const Directory *active = &directories[depth - 1];
-    at(0, 0);
-    printf("\033[1m");
+    term_move_cursor(0, 0);
+    term_bold();
     text(active->path, columns);
-    printf("\033[0m");
+    term_reset_style();
 
     int available = rows - 5;
     long position = 0;
@@ -408,17 +453,17 @@ static void draw(const Directory *directories, size_t depth, const char *message
             visible_width = columns - left;
         const char *title = strrchr(directory->path, '/');
         title = title && title[1] ? title + 1 : directory->path;
-        at(2, left);
-        printf("\033[1m");
+        term_move_cursor(2, left);
+        term_bold();
         clipped_text(title, skip, visible_width);
-        printf("\033[0m");
+        term_reset_style();
 
         int first = first_visible(directory, available, directory->selected);
         int visible = directory->count < available ? directory->count : available;
         int top = directory->count < available ? 3 + (available - visible) / 2 : 3;
         int selected_row = focus_row(directory, available, directory->selected);
         if (!directory->count) {
-            at(3 + available / 2, left);
+            term_move_cursor(3 + available / 2, left);
             clipped_text("(empty)", skip, visible_width);
         }
         for (int offset = 0; offset < visible; ++offset) {
@@ -431,14 +476,14 @@ static void draw(const Directory *directories, size_t depth, const char *message
                       selected_row, child_row, false);
         child_row = selected_row;
     }
-    at(rows - 2, 0);
+    term_move_cursor(rows - 2, 0);
     if (*message)
         text(message, columns);
-    at(rows - 1, 0);
-    printf("\033[2m");
+    term_move_cursor(rows - 1, 0);
+    term_dim();
     text(cd_mode ? "Arrows browse  e edit  n/N new  r rename  d delete  c cd  q quit"
                  : "Arrows browse  e edit  n/N new  r rename  d delete  q quit", columns);
-    printf("\033[0m");
+    term_reset_style();
     fflush(stdout);
 }
 
@@ -470,15 +515,15 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
     if (old_first == first) {
         int old_row = top + previous - first;
         int new_row = top + active->selected - first;
-        at(old_row, column);
+        term_move_cursor(old_row, column);
         printf("%-*s", width, "");
         draw_entry(active, previous, old_row, column, width, true);
-        at(new_row, column);
+        term_move_cursor(new_row, column);
         printf("%-*s", width, "");
         draw_entry(active, active->selected, new_row, column, width, true);
     } else {
         for (int offset = 0; offset < visible; ++offset) {
-            at(top + offset, column);
+            term_move_cursor(top + offset, column);
             printf("%-*s", width, "");
             draw_entry(active, first + offset, top + offset, column, width, true);
         }
@@ -491,8 +536,8 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
                       focus_row(parent, available, parent->selected),
                       focus_row(active, available, active->selected), false);
     }
-    at(size.ws_row - 2, 0);
-    fputs("\033[2K", stdout);
+    term_move_cursor(size.ws_row - 2, 0);
+    term_clear_line();
     fflush(stdout);
     return true;
 }
@@ -552,8 +597,8 @@ static bool prompt_name(const char *label, const char *initial, char *name, size
     bool dirty = true;
     while (!stopped) {
         if (dirty) {
-            at(size.ws_row - 2, 0);
-            fputs("\033[2K", stdout);
+            term_move_cursor(size.ws_row - 2, 0);
+            term_clear_line();
             const char *visible_label = strlen(label) >= size.ws_col ? "Name: " : label;
             int remaining = size.ws_col - (int)strlen(visible_label);
             text(visible_label, size.ws_col);
@@ -589,8 +634,8 @@ static bool confirm_remove(const char *name)
     struct winsize size;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 6)
         return false;
-    at(size.ws_row - 2, 0);
-    fputs("\033[2K", stdout);
+    term_move_cursor(size.ws_row - 2, 0);
+    term_clear_line();
     if (size.ws_col < 16) {
         text("Remove? y/N", size.ws_col);
     } else {
@@ -647,10 +692,10 @@ static int open_editor(const char *path, const struct termios *raw)
         arguments[index] = words.we_wordv[index];
     arguments[words.we_wordc] = (char *)path;
 
-    fputs("\033[0m\033[?25h\033[?1049l", stdout);
+    term_exit_alternate_buffer();
     fflush(stdout);
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_terminal) < 0) {
-        fputs("\033[?1049h\033[?25l", stdout);
+        term_enter_alternate_buffer();
         fflush(stdout);
         free(arguments);
         wordfree(&words);
@@ -681,7 +726,7 @@ static int open_editor(const char *path, const struct termios *raw)
     sigaction(SIGINT, &previous_int, NULL);
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, raw) == 0) {
         terminal_active = true;
-        fputs("\033[?1049h\033[?25l", stdout);
+        term_enter_alternate_buffer();
         fflush(stdout);
     }
     free(arguments);
@@ -754,7 +799,7 @@ int main(int argc, char **argv)
     sigaction(SIGWINCH, &action, NULL);
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGHUP, &action, NULL);
-    printf("\033[?1049h\033[?25l");
+    term_enter_alternate_buffer();
     load_colors();
 
     size_t depth = 1;
