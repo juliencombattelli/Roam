@@ -375,10 +375,11 @@ static int focus_row(const Directory *directory, int available, int selected)
 }
 
 static void draw_entry(const Directory *directory, int index, int row, int column,
-                       int width, bool active)
+                       int width, int skip, bool active)
 {
     term_move_cursor(row, column);
-    fputs(index == directory->selected ? "►" : " ", stdout);
+    if (!skip)
+        fputs(index == directory->selected ? "►" : " ", stdout);
     const char *color = color_rule_count
         ? entry_color(directory, directory->entries[index]->d_name) : NULL;
     if (color)
@@ -388,7 +389,8 @@ static void draw_entry(const Directory *directory, int index, int row, int colum
     } else if (index == directory->selected) {
         term_bold();
     }
-    clipped_text(directory->entries[index]->d_name, 0, width - 1);
+    clipped_text(directory->entries[index]->d_name, skip ? skip - 1 : 0,
+                 width - (skip == 0));
     term_reset_style();
 }
 
@@ -467,7 +469,7 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
         }
         int column = (int)position;
         int left = column < 0 ? 0 : column;
-        int skip = 0;
+        int skip = column < 0 ? -column : 0;
         int visible_width = column < 0 ? column + width : width;
         if (visible_width > columns - left)
             visible_width = columns - left;
@@ -489,7 +491,8 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
         for (int offset = 0; offset < visible; ++offset) {
             int entry_index = first + offset;
             int row = top + offset;
-            draw_entry(directory, entry_index, row, left, visible_width, step == active_step);
+            draw_entry(directory, entry_index, row, left, visible_width, skip,
+                       step == active_step);
         }
         if (child_row >= 0)
             draw_link(link_start(directory, column, width), column + width + 4,
@@ -537,15 +540,15 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
         int new_row = top + active->selected - first;
         term_move_cursor(old_row, column);
         printf("%-*s", width, "");
-        draw_entry(active, previous, old_row, column, width, true);
+        draw_entry(active, previous, old_row, column, width, 0, true);
         term_move_cursor(new_row, column);
         printf("%-*s", width, "");
-        draw_entry(active, active->selected, new_row, column, width, true);
+        draw_entry(active, active->selected, new_row, column, width, 0, true);
     } else {
         for (int offset = 0; offset < visible; ++offset) {
             term_move_cursor(top + offset, column);
             printf("%-*s", width, "");
-            draw_entry(active, first + offset, top + offset, column, width, true);
+            draw_entry(active, first + offset, top + offset, column, width, 0, true);
         }
     }
     if (depth > 1) {
