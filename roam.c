@@ -292,13 +292,13 @@ static void clipped_text(const char *source, int skip, int width)
         wchar_t character;
         size_t bytes = mbrtowc(&character, source, MB_CUR_MAX, &state);
         if (bytes == (size_t)-1 || bytes == (size_t)-2 || bytes == 0) {
-            if (skip <= 0)
-                putchar('?');
-            else
+            if (skip > 0) {
                 --skip;
-            ++source;
-            if (skip <= 0)
+            } else {
+                putchar('?');
                 --width;
+            }
+            ++source;
             memset(&state, 0, sizeof(state));
             continue;
         }
