@@ -356,6 +356,11 @@ static int directory_width(const Directory *directory, int limit)
     return directory->width < limit ? directory->width : limit;
 }
 
+static int centered_column(const Directory *directory, int columns)
+{
+    return (columns - directory_width(directory, columns - 2)) / 2;
+}
+
 static int first_visible(const Directory *directory, int available, int selected)
 {
     int first = directory->count > available ? selected - available / 2 : 0;
@@ -366,12 +371,17 @@ static int first_visible(const Directory *directory, int available, int selected
     return first < 0 ? 0 : first;
 }
 
+static int entry_top(const Directory *directory, int available)
+{
+    return directory->count < available ? 3 + (available - directory->count) / 2 : 3;
+}
+
 static int focus_row(const Directory *directory, int available, int selected)
 {
-    int visible = directory->count < available ? directory->count : available;
-    int top = directory->count < available ? 3 + (available - visible) / 2 : 3;
-    return directory->count ? top + selected - first_visible(directory, available, selected)
-                            : 3 + available / 2;
+    if (!directory->count)
+        return 3 + available / 2;
+    return entry_top(directory, available) + selected -
+           first_visible(directory, available, selected);
 }
 
 static void draw_entry(const Directory *directory, int index, int row, int column,
@@ -447,6 +457,8 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
     term_reset_style();
 
     int available = rows - 5;
+    int active_width = directory_width(active, columns - 2);
+    int active_column = centered_column(active, columns);
     long position = 0;
     int child_row = -1;
     size_t active_step = depth + (parent_preview != NULL);
@@ -457,10 +469,9 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
             : &directories[index - (parent_preview != NULL)];
         int width = directory_width(directory, columns - 2);
         if (step > active_step)
-            position = (columns - directory_width(active, columns - 2)) / 2 +
-                       directory_width(active, columns - 2) + 4;
+            position = active_column + active_width + 4;
         else if (step == active_step)
-            position = (columns - width) / 2;
+            position = active_column;
         else
             position -= width + 4;
         if (position + width <= 0 || position >= columns) {
@@ -482,7 +493,7 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
 
         int first = first_visible(directory, available, directory->selected);
         int visible = directory->count < available ? directory->count : available;
-        int top = directory->count < available ? 3 + (available - visible) / 2 : 3;
+        int top = entry_top(directory, available);
         int selected_row = focus_row(directory, available, directory->selected);
         if (!directory->count) {
             term_move_cursor(3 + available / 2, left);
@@ -519,11 +530,11 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
     int columns = size.ws_col;
     int available = size.ws_row - 5;
     int width = directory_width(active, columns - 2);
-    int column = (columns - width) / 2;
+    int column = centered_column(active, columns);
     int old_first = first_visible(active, available, previous);
     int first = first_visible(active, available, active->selected);
     int visible = active->count < available ? active->count : available;
-    int top = active->count < available ? 3 + (available - visible) / 2 : 3;
+    int top = entry_top(active, available);
 
     if (depth > 1) {
         const Directory *parent = &directories[depth - 2];
