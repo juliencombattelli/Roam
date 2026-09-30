@@ -1158,11 +1158,19 @@ int main(int argc, char **argv)
             dirty = true;
             continue;
         }
-        if (preview_enabled) {
+        bool selection_changed = (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') &&
+                                 current->selected != previous;
+        bool directory_changed = depth != previous_depth ||
+                                 ((key == KEY_LEFT || key == 'h') && dirty);
+        bool contents_may_change = key == 'n' || key == 'N' || key == 'r' || key == 'd' ||
+                                   key == 'e' || key == '\r' || key == '\n';
+        if (preview_enabled && (selection_changed || directory_changed || key == ' ' ||
+                                contents_may_change)) {
             refresh_preview(&preview, &directories[depth - 1]);
             dirty = true;
         }
-        if (parent_mode_set) {
+        if (parent_mode_set && (key == KEY_SHIFT_SPACE || key == 'H' || directory_changed ||
+                                key == 'e' || key == '\r' || key == '\n')) {
             if (parent_preview.path)
                 free_directory(&parent_preview);
             parent_preview = (Directory){0};
@@ -1170,6 +1178,9 @@ int main(int argc, char **argv)
                 load_parent_directory(&directories[0], &parent_preview);
             dirty = true;
         }
+        if (selection_changed && parent_mode_set &&
+            ((depth == 1 && parent_preview.path) || (depth > 1 && !parent_visible)))
+            dirty = true;
         if (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') {
             if (current->selected == previous && !had_message && !resized && !dirty)
                 continue;
