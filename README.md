@@ -12,13 +12,17 @@ Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u N
 
 - Up/Down (or `k`/`j`): select an entry
 - Right (or `l`): open the selected directory
-- Left (or `h`): return to the parent column
+- Left (or `h`): open the parent directory, including from the starting column
 - Space: toggle child previews without moving focus; previews follow selection and navigation
+- Shift+Space (or `H`): show or hide the active directory's parent without moving focus
 - Enter (or `e`): open the selected file or directory with `$EDITOR`
 - `n` / `N`: create a file / directory in the current directory
 - `r`: rename the selected entry (never overwrites another entry)
 - `d`: remove the selected entry after confirmation (directories must be empty)
 - `q` or Ctrl-C: quit and restore the previous screen
+
+Roam requests Kitty keyboard reporting while it is open so supported terminals
+can distinguish Shift+Space from Space. Use `H` if the terminal does not support it.
 
 To change the calling shell's directory, put `roam` on your `PATH` and add this
 `cdi` function to your shell configuration:
