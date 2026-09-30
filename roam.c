@@ -843,6 +843,150 @@ static int open_editor(const char *path, const struct termios *raw)
     return result;
 }
 
+static void create_entry(Directory *current, int key, char *message, size_t capacity)
+{
+    char name[256];
+    if (!prompt_name(key == 'n' ? "New file: " : "New directory: ", "", name, sizeof(name)))
+        return;
+    char *path = child_path(current->path, name);
+    if (!path) {
+        snprintf(message, capacity, "Out of memory");
+        return;
+    }
+    int result;
+    if (key == 'N') {
+        result = mkdir(path, 0777);
+    } else {
+        int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+        result = file < 0 ? -1 : close(file);
+    }
+    if (result < 0)
+        snprintf(message, capacity, "Cannot create: %s", strerror(errno));
+    else if (refresh_directory(current, name) < 0)
+        snprintf(message, capacity, "Cannot refresh: %s", strerror(errno));
+    free(path);
+}
+
+static void rename_entry(Directory *current, char *message, size_t capacity)
+{
+    const char *old_name = current->entries[current->selected]->d_name;
+    char name[256];
+    if (!prompt_name("Rename: ", old_name, name, sizeof(name)) || strcmp(name, old_name) == 0)
+        return;
+    char *old_path = child_path(current->path, old_name);
+    char *new_path = child_path(current->path, name);
+    if (!old_path || !new_path)
+        snprintf(message, capacity, "Out of memory");
+    else if (renameat2(AT_FDCWD, old_path, AT_FDCWD, new_path, RENAME_NOREPLACE) < 0)
+        snprintf(message, capacity, "Cannot rename: %s", strerror(errno));
+    else if (refresh_directory(current, name) < 0)
+        snprintf(message, capacity, "Cannot refresh: %s", strerror(errno));
+    free(old_path);
+    free(new_path);
+}
+
+static void remove_entry(Directory *current, char *message, size_t capacity)
+{
+    if (!confirm_remove(current->entries[current->selected]->d_name))
+        return;
+    char *path = child_path(current->path, current->entries[current->selected]->d_name);
+    if (!path) {
+        snprintf(message, capacity, "Out of memory");
+        return;
+    }
+    struct stat info;
+    if (lstat(path, &info) < 0 ||
+        (S_ISDIR(info.st_mode) ? rmdir(path) : unlink(path)) < 0)
+        snprintf(message, capacity, "Cannot remove: %s", strerror(errno));
+    else if (refresh_directory(current, NULL) < 0)
+        snprintf(message, capacity, "Cannot refresh: %s", strerror(errno));
+    free(path);
+}
+
+static void edit_entry(Directory *current, const struct termios *raw,
+                       char *message, size_t capacity)
+{
+    const char *name = current->entries[current->selected]->d_name;
+    char *path = child_path(current->path, name);
+    if (!path) {
+        snprintf(message, capacity, "Out of memory");
+        return;
+    }
+    if (open_editor(path, raw) < 0)
+        snprintf(message, capacity, "Editor unavailable or exited with an error");
+    if (!terminal_active)
+        stopped = 1;
+    if (refresh_directory(current, name) < 0)
+        snprintf(message, capacity, "Cannot refresh: %s", strerror(errno));
+    free(path);
+}
+
+static char *choose_directory(const Directory *current)
+{
+    char *candidate = child_path(current->path, current->entries[current->selected]->d_name);
+    struct stat info;
+    char *chosen = NULL;
+    if (candidate && stat(candidate, &info) == 0 && S_ISDIR(info.st_mode))
+        chosen = realpath(candidate, NULL);
+    free(candidate);
+    return chosen;
+}
+
+static void leave_directory(Directory *directories, size_t *depth,
+                            char *message, size_t capacity, bool *dirty)
+{
+    Directory *current = &directories[*depth - 1];
+    if (*depth > 1) {
+        free_directory(current);
+        --*depth;
+    } else if (strcmp(current->path, "/") != 0) {
+        Directory parent;
+        if (load_parent_directory(current, &parent) < 0) {
+            snprintf(message, capacity, "Cannot open: %s", strerror(errno));
+        } else {
+            free_directory(current);
+            *current = parent;
+            *dirty = true;
+        }
+    }
+}
+
+static bool enter_directory(Directory **directories, size_t *depth, size_t *capacity,
+                            char *message, size_t message_capacity)
+{
+    Directory *current = &(*directories)[*depth - 1];
+    char *child = child_path(current->path, current->entries[current->selected]->d_name);
+    if (!child) {
+        snprintf(message, message_capacity, "Out of memory");
+        return true;
+    }
+    struct stat info;
+    if (stat(child, &info) < 0 || !S_ISDIR(info.st_mode)) {
+        snprintf(message, message_capacity, "Not a readable directory");
+        free(child);
+        return true;
+    }
+    Directory next;
+    if (load_directory(child, &next) < 0) {
+        snprintf(message, message_capacity, "Cannot open: %s", strerror(errno));
+        free(child);
+        return true;
+    }
+    if (*depth == *capacity) {
+        size_t new_capacity = *capacity * 2;
+        Directory *grown = realloc(*directories, new_capacity * sizeof(**directories));
+        if (!grown) {
+            snprintf(message, message_capacity, "Out of memory");
+            free_directory(&next);
+            return false;
+        }
+        *directories = grown;
+        *capacity = new_capacity;
+    }
+    (*directories)[(*depth)++] = next;
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     bool cd_mode = argc > 1 && strcmp(argv[1], "--cd") == 0;
@@ -961,131 +1105,27 @@ int main(int argc, char **argv)
                 parent_preview = (Directory){0};
             }
         }
-        else if (key == 'n' || key == 'N') {
-            char name[256];
-            if (prompt_name(key == 'n' ? "New file: " : "New directory: ", "", name, sizeof(name))) {
-                char *path = child_path(current->path, name);
-                if (!path) {
-                    snprintf(message, sizeof(message), "Out of memory");
-                } else {
-                    int result;
-                    if (key == 'N') {
-                        result = mkdir(path, 0777);
-                    } else {
-                        int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
-                        result = file < 0 ? -1 : close(file);
-                    }
-                    if (result < 0)
-                        snprintf(message, sizeof(message), "Cannot create: %s", strerror(errno));
-                    else if (refresh_directory(current, name) < 0)
-                        snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
-                    free(path);
-                }
-            }
-        }
-        else if (key == 'r' && current->count) {
-            const char *old_name = current->entries[current->selected]->d_name;
-            char name[256];
-            if (prompt_name("Rename: ", old_name, name, sizeof(name)) && strcmp(name, old_name) != 0) {
-                char *old_path = child_path(current->path, old_name);
-                char *new_path = child_path(current->path, name);
-                if (!old_path || !new_path) {
-                    snprintf(message, sizeof(message), "Out of memory");
-                } else if (renameat2(AT_FDCWD, old_path, AT_FDCWD, new_path, RENAME_NOREPLACE) < 0) {
-                    snprintf(message, sizeof(message), "Cannot rename: %s", strerror(errno));
-                } else if (refresh_directory(current, name) < 0) {
-                    snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
-                }
-                free(old_path);
-                free(new_path);
-            }
-        }
-        else if (key == 'd' && current->count &&
-                 confirm_remove(current->entries[current->selected]->d_name)) {
-            char *path = child_path(current->path, current->entries[current->selected]->d_name);
-            if (!path) {
-                snprintf(message, sizeof(message), "Out of memory");
-            } else {
-                struct stat info;
-                if (lstat(path, &info) < 0 ||
-                    (S_ISDIR(info.st_mode) ? rmdir(path) : unlink(path)) < 0)
-                    snprintf(message, sizeof(message), "Cannot remove: %s", strerror(errno));
-                else if (refresh_directory(current, NULL) < 0)
-                    snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
-                free(path);
-            }
-        }
-        else if ((key == 'e' || key == '\r' || key == '\n') && current->count) {
-            const char *name = current->entries[current->selected]->d_name;
-            char *path = child_path(current->path, name);
-            if (!path) {
-                snprintf(message, sizeof(message), "Out of memory");
-            } else {
-                if (open_editor(path, &raw) < 0)
-                    snprintf(message, sizeof(message), "Editor unavailable or exited with an error");
-                if (!terminal_active)
-                    stopped = 1;
-                if (refresh_directory(current, name) < 0)
-                    snprintf(message, sizeof(message), "Cannot refresh: %s", strerror(errno));
-                free(path);
-            }
-        }
+        else if (key == 'n' || key == 'N')
+            create_entry(current, key, message, sizeof(message));
+        else if (key == 'r' && current->count)
+            rename_entry(current, message, sizeof(message));
+        else if (key == 'd' && current->count)
+            remove_entry(current, message, sizeof(message));
+        else if ((key == 'e' || key == '\r' || key == '\n') && current->count)
+            edit_entry(current, &raw, message, sizeof(message));
         else if (key == 'c' && cd_mode && current->count) {
-            char *candidate = child_path(current->path, current->entries[current->selected]->d_name);
-            struct stat info;
-            if (candidate && stat(candidate, &info) == 0 && S_ISDIR(info.st_mode))
-                chosen_directory = realpath(candidate, NULL);
+            chosen_directory = choose_directory(current);
             if (!chosen_directory)
                 snprintf(message, sizeof(message), "Select a directory to change into");
-            free(candidate);
             if (chosen_directory)
                 break;
         }
-        else if (key == 'D' || key == 'h') {
-            if (depth > 1) {
-                free_directory(current);
-                --depth;
-            } else if (strcmp(current->path, "/") != 0) {
-                Directory parent;
-                if (load_parent_directory(current, &parent) < 0) {
-                    snprintf(message, sizeof(message), "Cannot open: %s", strerror(errno));
-                } else {
-                    free_directory(current);
-                    *current = parent;
-                    dirty = true;
-                }
-            }
-        } else if ((key == 'C' || key == 'l') && current->count) {
-            char *child = child_path(current->path, current->entries[current->selected]->d_name);
-            if (!child) {
-                snprintf(message, sizeof(message), "Out of memory");
-            } else {
-                struct stat info;
-                if (stat(child, &info) < 0 || !S_ISDIR(info.st_mode)) {
-                    snprintf(message, sizeof(message), "Not a readable directory");
-                    free(child);
-                } else {
-                    Directory next;
-                    if (load_directory(child, &next) < 0) {
-                        snprintf(message, sizeof(message), "Cannot open: %s", strerror(errno));
-                        free(child);
-                    } else {
-                        if (depth == capacity) {
-                            size_t new_capacity = capacity * 2;
-                            Directory *grown = realloc(directories, new_capacity * sizeof(*directories));
-                            if (!grown) {
-                                snprintf(message, sizeof(message), "Out of memory");
-                                free_directory(&next);
-                                dirty = true;
-                                continue;
-                            }
-                            directories = grown;
-                            capacity = new_capacity;
-                        }
-                        directories[depth++] = next;
-                    }
-                }
-            }
+        else if (key == 'D' || key == 'h')
+            leave_directory(directories, &depth, message, sizeof(message), &dirty);
+        else if ((key == 'C' || key == 'l') && current->count &&
+                 !enter_directory(&directories, &depth, &capacity, message, sizeof(message))) {
+            dirty = true;
+            continue;
         }
         if (preview_enabled) {
             refresh_preview(&preview, &directories[depth - 1]);
