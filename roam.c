@@ -549,7 +549,7 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
     return true;
 }
 
-enum { KEY_SHIFT_SPACE = 256 };
+enum { KEY_SHIFT_SPACE = 256, KEY_UP, KEY_DOWN, KEY_RIGHT, KEY_LEFT };
 
 static int read_key(void)
 {
@@ -628,10 +628,10 @@ static int read_key(void)
             return keys == 0 && code >= 1 && code <= 127 ? (int)code : 0;
         }
         if (code == 1 && *end >= 'A' && *end <= 'D' && end[1] == '\0')
-            return *end;
+            return KEY_UP + *end - 'A';
         return 0;
     }
-    return key >= 'A' && key <= 'D' ? key : 0;
+    return key >= 'A' && key <= 'D' ? KEY_UP + key - 'A' : 0;
 }
 
 static bool prompt_name_input(const char *label, const char *initial, char *name, size_t capacity)
@@ -1086,9 +1086,9 @@ int main(int argc, char **argv)
         size_t previous_depth = depth;
         Directory *current = &directories[depth - 1];
         int previous = current->selected;
-        if ((key == 'A' || key == 'k') && current->selected > 0)
+        if ((key == KEY_UP || key == 'k') && current->selected > 0)
             --current->selected;
-        else if ((key == 'B' || key == 'j') && current->selected + 1 < current->count)
+        else if ((key == KEY_DOWN || key == 'j') && current->selected + 1 < current->count)
             ++current->selected;
         else if (key == ' ') {
             preview_enabled = !preview_enabled;
@@ -1120,9 +1120,9 @@ int main(int argc, char **argv)
             if (chosen_directory)
                 break;
         }
-        else if (key == 'D' || key == 'h')
+        else if (key == KEY_LEFT || key == 'h')
             leave_directory(directories, &depth, message, sizeof(message), &dirty);
-        else if ((key == 'C' || key == 'l') && current->count &&
+        else if ((key == KEY_RIGHT || key == 'l') && current->count &&
                  !enter_directory(&directories, &depth, &capacity, message, sizeof(message))) {
             dirty = true;
             continue;
@@ -1139,14 +1139,14 @@ int main(int argc, char **argv)
                 load_parent_directory(&directories[0], &parent_preview);
             dirty = true;
         }
-        if (key == 'A' || key == 'B' || key == 'j' || key == 'k') {
+        if (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') {
             if (current->selected == previous && !had_message && !resized && !dirty)
                 continue;
             if (current->selected != previous && !resized && !dirty &&
                 redraw_focus(directories, depth, previous))
                 continue;
         }
-        if ((key == 'C' || key == 'D' || key == 'h' || key == 'l') &&
+        if ((key == KEY_RIGHT || key == KEY_LEFT || key == 'h' || key == 'l') &&
             depth == previous_depth && strcmp(message, previous_message) == 0 && !resized && !dirty)
             continue;
         dirty = true;
