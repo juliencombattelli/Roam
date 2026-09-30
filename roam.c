@@ -52,15 +52,33 @@ static void term_push_keyboard_mode(void)
     fputs("\033[>8u", stdout);
 }
 
+static void term_show_cursor(void)
+{
+    fputs("\033[?25h", stdout);
+}
+
+static void term_hide_cursor(void)
+{
+    fputs("\033[?25l", stdout);
+}
+
+static void term_reset_style(void)
+{
+    fputs("\033[0m", stdout);
+}
+
 static void term_exit_alternate_buffer(void)
 {
     term_pop_keyboard_mode();
-    fputs("\033[0m\033[?25h\033[?1049l", stdout);
+    term_reset_style();
+    term_show_cursor();
+    fputs("\033[?1049l", stdout);
 }
 
 static void term_enter_alternate_buffer(void)
 {
-    fputs("\033[?1049h\033[?25l", stdout);
+    fputs("\033[?1049h", stdout);
+    term_hide_cursor();
     term_push_keyboard_mode();
 }
 
@@ -82,11 +100,6 @@ static void term_clear_line(void)
 static void term_set_color(const char *color)
 {
     printf("\033[%sm", color);
-}
-
-static void term_reset_style(void)
-{
-    fputs("\033[0m", stdout);
 }
 
 static void term_bold(void)
@@ -801,10 +814,13 @@ static int open_editor(const char *path, const struct termios *raw)
         arguments[index] = words.we_wordv[index];
     arguments[words.we_wordc] = (char *)path;
 
-    term_exit_alternate_buffer();
+    term_pop_keyboard_mode();
+    term_reset_style();
+    term_show_cursor();
     fflush(stdout);
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_terminal) < 0) {
-        term_enter_alternate_buffer();
+        term_hide_cursor();
+        term_push_keyboard_mode();
         fflush(stdout);
         free(arguments);
         wordfree(&words);
