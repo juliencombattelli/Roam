@@ -5,8 +5,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fnmatch.h>
+#include <grp.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <locale.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -17,6 +20,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 #include <wchar.h>
 #include <wordexp.h>
@@ -452,6 +456,78 @@ static void draw_link(int start, int end, int parent_row, int child_row, bool er
     fputs(erase ? "  " : parent_row < child_row ? "└─" : "┌─", stdout);
 }
 
+static void draw_entry_info(const Directory *directory, int row, int columns)
+{
+    term_move_cursor(row, 0);
+    term_clear_line();
+    if (!directory->count)
+        return;
+    char *path = child_path(directory->path, directory->entries[directory->selected]->d_name);
+    struct stat info;
+    if (!path || lstat(path, &info) < 0) {
+        text("Metadata unavailable", columns);
+        free(path);
+        return;
+    }
+    free(path);
+
+    char mode[] = "----------";
+    mode[0] = S_ISDIR(info.st_mode) ? 'd' : S_ISLNK(info.st_mode) ? 'l' :
+              S_ISCHR(info.st_mode) ? 'c' : S_ISBLK(info.st_mode) ? 'b' :
+              S_ISFIFO(info.st_mode) ? 'p' : S_ISSOCK(info.st_mode) ? 's' : '-';
+    const mode_t bits[] = {S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP,
+                           S_IROTH, S_IWOTH, S_IXOTH};
+    for (int index = 0; index < 9; ++index)
+        if (info.st_mode & bits[index])
+            mode[index + 1] = "rwx"[index % 3];
+    if (info.st_mode & S_ISUID)
+        mode[3] = mode[3] == 'x' ? 's' : 'S';
+    if (info.st_mode & S_ISGID)
+        mode[6] = mode[6] == 'x' ? 's' : 'S';
+    if (info.st_mode & S_ISVTX)
+        mode[9] = mode[9] == 'x' ? 't' : 'T';
+
+    for (int index = 0; index < 10 && index < columns; ++index) {
+        term_set_color(index == 0 ? (mode[0] == 'd' ? "1;34" : mode[0] == 'l' ? "1;36" : "1;37") :
+                   mode[index] == '-' ? "0;2" : mode[index] == 'r' ? "0;32" :
+                   mode[index] == 'w' ? "0;33" : mode[index] == 'x' ? "0;31" : "0;1;35");
+        putchar(mode[index]);
+    }
+    term_reset_style();
+
+    char owner_name[256], group_name[256], size_text[32], modified[32], details[640];
+    struct passwd *owner = getpwuid(info.st_uid);
+    if (owner)
+        snprintf(owner_name, sizeof(owner_name), "%s", owner->pw_name);
+    else
+        snprintf(owner_name, sizeof(owner_name), "%ju", (uintmax_t)info.st_uid);
+    struct group *group = getgrgid(info.st_gid);
+    if (group)
+        snprintf(group_name, sizeof(group_name), "%s", group->gr_name);
+    else
+        snprintf(group_name, sizeof(group_name), "%ju", (uintmax_t)info.st_gid);
+    if (info.st_size < 1024) {
+        snprintf(size_text, sizeof(size_text), "%jd B", (intmax_t)info.st_size);
+    } else {
+        double amount = (double)info.st_size;
+        const char *units[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
+        int unit = 0;
+        while (amount >= 1024 && unit < 6) {
+            amount /= 1024;
+            ++unit;
+        }
+        snprintf(size_text, sizeof(size_text), "%.1f %s", amount, units[unit]);
+    }
+    struct tm local;
+    if (!localtime_r(&info.st_mtime, &local) ||
+        !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M", &local))
+        snprintf(modified, sizeof(modified), "?");
+    snprintf(details, sizeof(details), " | %s | %s | %s | %s",
+             owner_name, group_name, size_text, modified);
+    if (columns > 10)
+        text(details, columns - 10);
+}
+
 static void draw(const Directory *directories, size_t depth, const Directory *preview,
                  const Directory *parent_preview, const char *message, bool cd_mode)
 {
@@ -461,7 +537,7 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
     int columns = size.ws_col;
     int rows = size.ws_row;
     term_clear_screen();
-    if (columns < 12 || rows < 6) {
+    if (columns < 12 || rows < 7) {
         term_move_cursor(0, 0);
         text("Terminal too small", columns);
         fflush(stdout);
@@ -474,7 +550,7 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
     text(active->path, columns);
     term_reset_style();
 
-    int available = rows - 5;
+    int available = rows - 6;
     int active_width = directory_width(active, columns - 2);
     int active_column = centered_column(active, columns);
     long position = 0;
@@ -528,9 +604,10 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
                       selected_row, child_row, false);
         child_row = selected_row;
     }
-    term_move_cursor(rows - 2, 0);
+    term_move_cursor(rows - 3, 0);
     if (*message)
         text(message, columns);
+    draw_entry_info(active, rows - 2, columns);
     term_move_cursor(rows - 1, 0);
     term_dim();
     text(cd_mode ? "Arrows browse  Space child  Shift+Space/H parent  e edit  n/N new  r rename  d delete  c cd  q quit"
@@ -542,11 +619,11 @@ static void draw(const Directory *directories, size_t depth, const Directory *pr
 static bool redraw_focus(const Directory *directories, size_t depth, int previous)
 {
     struct winsize size;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_col < 12 || size.ws_row < 6)
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_col < 12 || size.ws_row < 7)
         return false;
     const Directory *active = &directories[depth - 1];
     int columns = size.ws_col;
-    int available = size.ws_row - 5;
+    int available = size.ws_row - 6;
     int width = directory_width(active, columns - 2);
     int column = centered_column(active, columns);
     int old_first = first_visible(active, available, previous);
@@ -588,7 +665,8 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
                       focus_row(parent, available, parent->selected),
                       focus_row(active, available, active->selected), false);
     }
-    term_move_cursor(size.ws_row - 2, 0);
+    draw_entry_info(active, size.ws_row - 2, columns);
+    term_move_cursor(size.ws_row - 3, 0);
     term_clear_line();
     fflush(stdout);
     return true;
@@ -682,7 +760,7 @@ static int read_key(void)
 static bool prompt_name_input(const char *label, const char *initial, char *name, size_t capacity)
 {
     struct winsize size;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 6)
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 7)
         return false;
     size_t length = strlen(initial);
     if (length >= capacity)
@@ -691,7 +769,7 @@ static bool prompt_name_input(const char *label, const char *initial, char *name
     bool dirty = true;
     while (!stopped) {
         if (dirty) {
-            term_move_cursor(size.ws_row - 2, 0);
+            term_move_cursor(size.ws_row - 3, 0);
             term_clear_line();
             const char *visible_label = strlen(label) >= size.ws_col ? "Name: " : label;
             int remaining = size.ws_col - (int)strlen(visible_label);
@@ -737,9 +815,9 @@ static bool prompt_name(const char *label, const char *initial, char *name, size
 static bool confirm_remove_input(const char *name)
 {
     struct winsize size;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 6)
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 7)
         return false;
-    term_move_cursor(size.ws_row - 2, 0);
+    term_move_cursor(size.ws_row - 3, 0);
     term_clear_line();
     if (size.ws_col < 16) {
         text("Remove? y/N", size.ws_col);
