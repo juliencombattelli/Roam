@@ -195,10 +195,24 @@ static void load_colors(void)
     color_rules = calloc(capacity, sizeof(*color_rules));
     if (!color_rules)
         return;
-    char *save = NULL;
-    for (char *part = strtok_r(color_storage, ":", &save); part;
-         part = strtok_r(NULL, ":", &save)) {
-        char *separator = strchr(part, '=');
+    for (char *cursor = color_storage; *cursor;) {
+        char *part = cursor;
+        char *write = cursor;
+        char *separator = NULL;
+        while (*cursor && *cursor != ':') {
+            if (*cursor == '\\' && (cursor[1] == ':' || cursor[1] == '=' || cursor[1] == '\\')) {
+                ++cursor;
+                *write++ = *cursor++;
+                continue;
+            }
+            if (*cursor == '=' && !separator)
+                separator = write;
+            *write++ = *cursor++;
+        }
+        bool more = *cursor == ':';
+        *write = '\0';
+        if (more)
+            ++cursor;
         if (!separator || !separator[1])
             continue;
         *separator++ = '\0';
