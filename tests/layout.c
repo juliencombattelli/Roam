@@ -6,8 +6,34 @@
 
 int main(void)
 {
+    int input[2];
+    assert(pipe(input) == 0);
+    int original_input = dup(STDIN_FILENO);
+    assert(original_input >= 0 && dup2(input[0], STDIN_FILENO) >= 0);
+    struct { const char *sequence; int expected; } keys[] = {
+        {"?", '?'}, {"\033[47:63;2u", '?'}, {"\033[44:63;2u", '?'},
+        {"\033[44;2;63u", '?'}, {"\033[44:63;2;63u", '?'}, {"\033[0;;63u", '?'},
+        {"\033[44:60;2;63u", '?'}, {"\033[110;1;110u", 'n'},
+        {"\033[44:60;2u", '<'}, {"\033[44;2;60u", '<'},
+        {"\033[47;2u", 0}, {"\033[44;2;233u", 0},
+        {"\033[44;2:3;63u", 0}, {"\033[47;5u", 0}
+    };
+    for (size_t index = 0; index < sizeof(keys) / sizeof(*keys); ++index) {
+        assert(write(input[1], keys[index].sequence, strlen(keys[index].sequence)) > 0);
+        assert(read_key() == keys[index].expected);
+    }
+    assert(dup2(original_input, STDIN_FILENO) >= 0);
+    close(original_input);
+    close(input[0]);
+    close(input[1]);
+
     Directory empty = {0};
     assert(content_width(&empty, 80) == 9);
+    char size_text[32];
+    format_size(46, size_text, sizeof(size_text));
+    assert(strcmp(size_text, "46 B") == 0);
+    format_size(1536, size_text, sizeof(size_text));
+    assert(strcmp(size_text, "1.5 KiB") == 0);
     unsigned char routes[100] = {0};
     route_visible(routes, 10, 10, 3, -5, 3, 15);
     assert(routes[3 * 10] & LINE_RIGHT);

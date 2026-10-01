@@ -20,7 +20,8 @@ Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u N
 - `n` / `N`: create a file / directory in the current directory
 - `r`: rename the selected entry (never overwrites another entry)
 - `d`: remove the selected entry after confirmation (directories must be empty)
-- `q` or Ctrl-C: quit and restore the previous screen
+- `?`: show the centered key reference (Escape or `q` closes it)
+- Escape, `q`, or Ctrl-C: quit and restore the previous screen
 
 Roam requests Kitty keyboard reporting while it is open so supported terminals
 can distinguish Shift+Space from Space. Use `H` if the terminal does not support it.

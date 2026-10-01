@@ -54,8 +54,6 @@ static bool viewport_initialized;
 static unsigned char *painted_cells;
 static int painted_columns;
 static int painted_rows;
-static int help_columns;
-static int help_rows;
 static struct {
     char *path;
     char *entry;
@@ -149,7 +147,7 @@ static void term_pop_keyboard_mode(void)
 
 static void term_push_keyboard_mode(void)
 {
-    fputs("\033[>8u", stdout);
+    fputs("\033[>28u", stdout);
 }
 
 static void term_show_cursor(void)
@@ -178,7 +176,6 @@ static void term_exit_alternate_buffer(void)
 static void term_enter_alternate_buffer(void)
 {
     fputs("\033[?1049h", stdout);
-    help_rows = 0;
     term_hide_cursor();
     term_push_keyboard_mode();
 }
@@ -691,7 +688,7 @@ static void route_visible(unsigned char *routes, int columns, int rows,
                           int row, int column, int end_row, int end_column)
 {
     if (row == end_row) {
-        if (row < 2 || row >= rows - 3)
+        if (row < 2 || row >= rows - 2)
             return;
         int first = column < end_column ? column : end_column;
         int last = column > end_column ? column : end_column;
@@ -706,8 +703,8 @@ static void route_visible(unsigned char *routes, int columns, int rows,
         int last = row > end_row ? row : end_row;
         if (first < 2)
             first = 2;
-        if (last >= rows - 3)
-            last = rows - 4;
+        if (last >= rows - 2)
+            last = rows - 3;
         if (first < last)
             route_line(routes, columns, rows, first, column, last, column);
     }
@@ -719,7 +716,7 @@ static void draw_routes(const unsigned char *routes, int columns, int rows)
         "", "│", "─", "╰", "│", "│", "╭", "├",
         "─", "╯", "─", "┴", "╮", "┤", "┬", "┼"
     };
-    for (int row = 1; row < rows - 3; ++row)
+    for (int row = 1; row < rows - 2; ++row)
         for (int column = 0; column < columns; ++column)
             if (routes[row * columns + column]) {
                 term_move_cursor(row, column);
@@ -730,7 +727,7 @@ static void draw_routes(const unsigned char *routes, int columns, int rows)
 static void mark_cells(unsigned char *frame, int columns, int rows,
                        int row, int column, int width)
 {
-    if (!frame || row < 2 || row >= rows - 3 || width <= 0)
+    if (!frame || row < 2 || row >= rows - 2 || width <= 0)
         return;
     int first = column < 0 ? 0 : column;
     int last = column + width > columns ? columns : column + width;
@@ -742,7 +739,7 @@ static void erase_old_cells(const unsigned char *frame, int columns, int rows)
 {
     if (!painted_cells || !frame)
         return;
-    for (int row = 2; row < rows - 3; ++row)
+    for (int row = 2; row < rows - 2; ++row)
         for (int column = 0; column < columns;) {
             size_t cell = (size_t)row * columns + column;
             if (!painted_cells[cell] || frame[cell]) {
@@ -758,93 +755,152 @@ static void erase_old_cells(const unsigned char *frame, int columns, int rows)
         }
 }
 
-static void draw_entry_info(const Directory *directory, int row, int columns)
+static void format_size(off_t size, char *output, size_t capacity)
 {
-    term_move_cursor(row, 0);
-    if (!directory->count) {
-        printf("%*s", columns, "");
-        return;
-    }
-    char *path = child_path(directory->path, directory->entries[directory->selected]->d_name);
-    struct stat info;
-    if (!path || lstat(path, &info) < 0) {
-        text("Metadata unavailable", columns);
-        int printed = text_width("Metadata unavailable", columns);
-        if (printed < columns)
-            printf("%*s", columns - printed, "");
-        free(path);
-        return;
-    }
-    free(path);
-
-    char mode[] = "----------";
-    mode[0] = S_ISDIR(info.st_mode) ? 'd' : S_ISLNK(info.st_mode) ? 'l' :
-              S_ISCHR(info.st_mode) ? 'c' : S_ISBLK(info.st_mode) ? 'b' :
-              S_ISFIFO(info.st_mode) ? 'p' : S_ISSOCK(info.st_mode) ? 's' : '-';
-    const mode_t bits[] = {S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP,
-                           S_IROTH, S_IWOTH, S_IXOTH};
-    for (int index = 0; index < 9; ++index)
-        if (info.st_mode & bits[index])
-            mode[index + 1] = "rwx"[index % 3];
-    if (info.st_mode & S_ISUID)
-        mode[3] = mode[3] == 'x' ? 's' : 'S';
-    if (info.st_mode & S_ISGID)
-        mode[6] = mode[6] == 'x' ? 's' : 'S';
-    if (info.st_mode & S_ISVTX)
-        mode[9] = mode[9] == 'x' ? 't' : 'T';
-
-    for (int index = 0; index < 10 && index < columns; ++index) {
-        term_set_color(index == 0 ? (mode[0] == 'd' ? "1;34" : mode[0] == 'l' ? "1;36" : "1;37") :
-                   mode[index] == '-' ? "0;2" : mode[index] == 'r' ? "0;32" :
-                   mode[index] == 'w' ? "0;33" : mode[index] == 'x' ? "0;31" : "0;1;35");
-        putchar(mode[index]);
-    }
-    term_reset_style();
-
-    char owner_name[256], group_name[256], size_text[32], modified[32], details[640];
-    struct passwd *owner = getpwuid(info.st_uid);
-    if (owner)
-        snprintf(owner_name, sizeof(owner_name), "%s", owner->pw_name);
-    else
-        snprintf(owner_name, sizeof(owner_name), "%ju", (uintmax_t)info.st_uid);
-    struct group *group = getgrgid(info.st_gid);
-    if (group)
-        snprintf(group_name, sizeof(group_name), "%s", group->gr_name);
-    else
-        snprintf(group_name, sizeof(group_name), "%ju", (uintmax_t)info.st_gid);
-    if (info.st_size < 1024) {
-        snprintf(size_text, sizeof(size_text), "%jd B", (intmax_t)info.st_size);
+    if (size < 1024) {
+        snprintf(output, capacity, "%jd B", (intmax_t)size);
     } else {
-        double amount = (double)info.st_size;
+        double amount = (double)size;
         const char *units[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
         int unit = 0;
         while (amount >= 1024 && unit < 6) {
             amount /= 1024;
             ++unit;
         }
-        snprintf(size_text, sizeof(size_text), "%.1f %s", amount, units[unit]);
-    }
-    struct tm local;
-    if (!localtime_r(&info.st_mtime, &local) ||
-        !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M", &local))
-        snprintf(modified, sizeof(modified), "?");
-    snprintf(details, sizeof(details), " | %s | %s | %s | %s",
-             owner_name, group_name, size_text, modified);
-    if (columns > 10) {
-        text(details, columns - 10);
-        int printed = text_width(details, columns - 10);
-        if (printed < columns - 10)
-            printf("%*s", columns - 10 - printed, "");
+        snprintf(output, capacity, "%.1f %s", amount, units[unit]);
     }
 }
 
-static void draw_status_bar(const Directory *active, int rows, int columns, bool cd_mode)
+static void format_entry_details(const struct stat *info, char *owner_group,
+                                 size_t owner_group_size, char *details, size_t details_size)
 {
-    term_move_cursor(rows - 2, 0);
-    term_set_color("48;5;23;38;5;252");
+    char owner_name[256], group_name[256], modified[32];
+    struct passwd *owner = getpwuid(info->st_uid);
+    if (owner)
+        snprintf(owner_name, sizeof(owner_name), "%s", owner->pw_name);
+    else
+        snprintf(owner_name, sizeof(owner_name), "%ju", (uintmax_t)info->st_uid);
+    struct group *group = getgrgid(info->st_gid);
+    if (group)
+        snprintf(group_name, sizeof(group_name), "%s", group->gr_name);
+    else
+        snprintf(group_name, sizeof(group_name), "%ju", (uintmax_t)info->st_gid);
+    struct tm local;
+    if (!localtime_r(&info->st_mtime, &local) ||
+        !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M", &local))
+        snprintf(modified, sizeof(modified), "?");
+    snprintf(owner_group, owner_group_size, "  %s  %s", owner_name, group_name);
+    snprintf(details, details_size, "  %s", modified);
+}
+
+static void draw_entry_info(const struct stat *info, int row, int column, int columns)
+{
+    term_move_cursor(row, column);
+    term_set_color("0;48;5;234;39");
+    if (!info) {
+        text("Metadata unavailable", columns);
+        int printed = text_width("Metadata unavailable", columns);
+        if (printed < columns)
+            printf("%*s", columns - printed, "");
+        return;
+    }
+
+    char mode[] = "----------";
+    mode[0] = S_ISDIR(info->st_mode) ? 'd' : S_ISLNK(info->st_mode) ? 'l' :
+              S_ISCHR(info->st_mode) ? 'c' : S_ISBLK(info->st_mode) ? 'b' :
+              S_ISFIFO(info->st_mode) ? 'p' : S_ISSOCK(info->st_mode) ? 's' : '-';
+    const mode_t bits[] = {S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP,
+                           S_IROTH, S_IWOTH, S_IXOTH};
+    for (int index = 0; index < 9; ++index)
+        if (info->st_mode & bits[index])
+            mode[index + 1] = "rwx"[index % 3];
+    if (info->st_mode & S_ISUID)
+        mode[3] = mode[3] == 'x' ? 's' : 'S';
+    if (info->st_mode & S_ISGID)
+        mode[6] = mode[6] == 'x' ? 's' : 'S';
+    if (info->st_mode & S_ISVTX)
+        mode[9] = mode[9] == 'x' ? 't' : 'T';
+
+    for (int index = 0; index < 10 && index < columns; ++index) {
+        printf("\033[0;48;5;234;%sm", index == 0 ? (mode[0] == 'd' ? "1;34" : mode[0] == 'l' ? "1;36" : "1;37") :
+               mode[index] == '-' ? "2" : mode[index] == 'r' ? "32" :
+               mode[index] == 'w' ? "33" : mode[index] == 'x' ? "31" : "1;35");
+        putchar(mode[index]);
+    }
+    term_set_color("0;48;5;234;39");
+
+    char owner_group[640], details[64];
+    format_entry_details(info, owner_group, sizeof(owner_group), details, sizeof(details));
+    if (columns > 10) {
+        int remaining = columns - 10;
+        term_set_color("0;48;5;234;38;5;244");
+        text(owner_group, remaining);
+        int printed = text_width(owner_group, remaining);
+        remaining -= printed;
+        term_set_color("0;48;5;234;39");
+        text(details, remaining);
+        printed = text_width(details, remaining);
+        if (printed < remaining)
+            printf("%*s", remaining - printed, "");
+    }
+}
+
+static void draw_status_bar(const Directory *active, int rows, int columns)
+{
+    int bar_width = columns - 9;
+    char summary[64];
+    char *focused = active->count
+        ? child_path(active->path, active->entries[active->selected]->d_name) : NULL;
+    struct stat info;
+    bool has_info = focused && lstat(focused, &info) == 0;
+    if (has_info && S_ISDIR(info.st_mode)) {
+        DIR *entries = opendir(focused);
+        if (entries) {
+            size_t count = 0;
+            struct dirent *entry;
+            while ((entry = readdir(entries)))
+                if (accept_entry(entry))
+                    ++count;
+            closedir(entries);
+            snprintf(summary, sizeof(summary), "%zu %s", count,
+                     count == 1 ? "item" : "items");
+        } else {
+            snprintf(summary, sizeof(summary), "? items");
+        }
+    } else if (has_info) {
+        format_size(info.st_size, summary, sizeof(summary));
+    } else if (active->count) {
+        snprintf(summary, sizeof(summary), "?");
+    } else {
+        snprintf(summary, sizeof(summary), "%d %s", active->count,
+                 active->count == 1 ? "item" : "items");
+    }
+    int summary_width = columns < 32 ? 0 : text_width(summary, bar_width - 2);
+    int metadata_width = columns >= 100 ? 52 : columns >= 72 ? 30 :
+                         columns >= 48 ? 16 : 0;
+    if (has_info) {
+        char owner_group[640], details[64];
+        format_entry_details(&info, owner_group, sizeof(owner_group), details, sizeof(details));
+        int content_width = 10 + text_width(owner_group, INT_MAX) +
+                            text_width(details, INT_MAX);
+        if (metadata_width > content_width)
+            metadata_width = content_width;
+    } else if (!active->count) {
+        metadata_width = 0;
+    } else if (metadata_width > 20) {
+        metadata_width = 20;
+    }
+    if (metadata_width > bar_width - summary_width - 5)
+        metadata_width = bar_width - summary_width - 5;
+    if (metadata_width < 11)
+        metadata_width = 0;
+    int summary_column = bar_width - summary_width - (metadata_width ? metadata_width + 2 : 0);
+    int left_limit = summary_column - (summary_width ? 2 : 1);
+    term_move_cursor(rows - 1, 0);
+    term_set_color("48;5;234;38;5;252");
     putchar(' ');
-    term_move_cursor(rows - 2, 1);
-    char *path = strdup(active->path);
+    term_move_cursor(rows - 1, 1);
+    char *path = strdup(focused ? focused : active->path);
     const char *segments[3] = {NULL};
     int count = 0;
     if (path) {
@@ -860,60 +916,55 @@ static void draw_status_bar(const Directory *active, int rows, int columns, bool
         }
     }
     if (!count)
-        segments[count++] = active->path;
+        segments[count++] = focused ? focused : active->path;
     int first = 0;
     int breadcrumb_width = 0;
     for (int index = 0; index < count; ++index)
         breadcrumb_width += text_width(segments[index], columns) + (index != 0 ? 3 : 0);
-    while (first < count - 1 && breadcrumb_width > columns - 18) {
+    while (first < count - 1 && breadcrumb_width > left_limit - 10) {
         breadcrumb_width -= text_width(segments[first], columns) + 3;
         ++first;
     }
     int used = 1;
-    for (int index = first; index < count && used < columns - 1; ++index) {
+    for (int index = first; index < count && used < left_limit - 1; ++index) {
         if (index != first) {
-            if (columns - used - 1 < 4)
+            if (left_limit - used - 1 < 4)
                 break;
-            term_set_color("48;5;23;38;5;110");
-            text(" › ", columns - used - 1);
+            term_set_color("48;5;234;38;5;110");
+            text(" › ", left_limit - used - 1);
             used += 3;
         }
-        term_set_color(index == count - 1 ? "48;5;23;38;5;231;1" : "48;5;23;38;5;80");
-        int width = columns - used - 1;
+        term_set_color(index == count - 1 ? "48;5;234;38;5;231;1" : "48;5;234;38;5;80");
+        int width = left_limit - used - 1;
         clipped_text(segments[index], 0, width);
         used += text_width(segments[index], width);
     }
     free(path);
-    term_set_color("48;5;23;38;5;180");
-    char summary[64];
-    snprintf(summary, sizeof(summary), "  |  %d %s", active->count,
-             active->count == 1 ? "item" : "items");
-    int remaining = columns - used - 1;
-    if (remaining > 0) {
-        text(summary, remaining);
-        used += text_width(summary, remaining);
+    term_set_color("48;5;234;38;5;252");
+    term_move_cursor(rows - 1, used);
+    if (used < summary_column)
+        printf("%*s", summary_column - used, "");
+    term_set_color("48;5;234;38;5;180");
+    term_move_cursor(rows - 1, summary_column);
+    text(summary, summary_width);
+    if (metadata_width) {
+        term_set_color("48;5;234;38;5;252");
+        fputs("  ", stdout);
+        if (active->count)
+            draw_entry_info(has_info ? &info : NULL, rows - 1,
+                            summary_column + summary_width + 2, metadata_width);
+        else
+            printf("%*s", metadata_width, "");
     }
-    term_set_color("48;5;23;38;5;252");
-    if (used < columns)
-        printf("%*s", columns - used, "");
-
-    if (help_columns != columns || help_rows != rows) {
-        term_move_cursor(rows - 1, 0);
-        term_set_color("48;5;23;38;5;252");
-        term_clear_line();
-        term_move_cursor(rows - 1, 1);
-        term_set_color("48;5;23;38;5;152");
-        text(cd_mode ? "arrows browse   space expand   H parents   e edit   n/N new   r rename   d delete   c cd   q quit"
-                     : "arrows browse   space expand   H parents   e edit   n/N new   r rename   d delete   q quit",
-             columns - 2);
-        help_columns = columns;
-        help_rows = rows;
-    }
+    term_move_cursor(rows - 1, bar_width);
+    term_set_color("48;5;234;38;5;152");
+    fputs("  ? keys ", stdout);
     term_reset_style();
+    free(focused);
 }
 
 static long draw(const Directory *directories, size_t depth,
-                 const Directory *parent_preview, const char *message, bool cd_mode,
+                 const Directory *parent_preview, const char *message,
                  bool preserve_offset, bool redraw_chrome)
 {
     struct winsize size;
@@ -1054,14 +1105,14 @@ static long draw(const Directory *directories, size_t depth,
         viewport_initialized = true;
     }
     long offset = viewport_offset;
-    int center_row = 2 + (rows - 5) / 2;
+    int center_row = 2 + (rows - 4) / 2;
     const Directory *root = branches[0].directory;
     const char *root_name = strrchr(root->path, '/');
     root_name = root_name && root_name[1] ? root_name + 1 : root->path;
     int root_column = (int)(levels[0].position + offset);
     int root_row = center_row + branches[0].row_start + root->selected;
     int root_width = text_width(root_name, columns);
-    bool root_label_visible = root_row >= 2 && root_row < rows - 3 &&
+    bool root_label_visible = root_row >= 2 && root_row < rows - 2 &&
                               root_column > root_width + 2;
     size_t cells = (size_t)rows * columns;
     unsigned char *frame = calloc(cells, 1);
@@ -1078,13 +1129,13 @@ static long draw(const Directory *directories, size_t depth,
         int entries = group_length(branch);
         for (int entry = 0; entry < entries; ++entry) {
             int row = top + entry;
-            if (row >= 2 && row < rows - 3)
+            if (row >= 2 && row < rows - 2)
                 route_line(rails, columns, rows, row, column, row, column + 1);
         }
         int first = top < 2 ? 2 : top;
         int last = top + entries - 1;
-        if (last >= rows - 3)
-            last = rows - 4;
+        if (last >= rows - 2)
+            last = rows - 3;
         if (first < last)
             route_line(rails, columns, rows, first, column, last, column);
         if (root_label_visible)
@@ -1111,7 +1162,7 @@ static long draw(const Directory *directories, size_t depth,
         int name_width = visible_width - 2;
         int entry_top_row = center_row + branch->row_start;
         if (!directory->count) {
-            if (entry_top_row >= 2 && entry_top_row < rows - 3 && name_width > 0) {
+            if (entry_top_row >= 2 && entry_top_row < rows - 2 && name_width > 0) {
                 term_move_cursor(entry_top_row, name_left);
                 clipped_text("(empty)", name_skip, name_width);
                 int label_width = text_width("(empty)", name_skip + name_width) - name_skip;
@@ -1120,15 +1171,13 @@ static long draw(const Directory *directories, size_t depth,
         }
         for (int entry = 0; entry < directory->count; ++entry) {
             int row = entry_top_row + entry;
-            if (row >= 2 && row < rows - 3 && name_width > 0) {
+            if (row >= 2 && row < rows - 2 && name_width > 0) {
                 const char *color = color_rule_count
                     ? entry_color(directory, directory->entries[entry]->d_name) : NULL;
                 if (color)
                     term_set_color(color);
-                if (index == active_index && entry == directory->selected) {
-                    term_bold();
-                    term_set_color(color ? "48;5;237" : "48;5;237;38;5;231");
-                }
+                if (index == active_index && entry == directory->selected)
+                    term_reverse_video();
                 term_move_cursor(row, name_left);
                 clipped_text(directory->entries[entry]->d_name, name_skip, name_width);
                 char *path = child_path(directory->path, directory->entries[entry]->d_name);
@@ -1206,13 +1255,13 @@ static long draw(const Directory *directories, size_t depth,
     free(levels);
     free_columns(branches, count);
     if (redraw_chrome) {
-        term_move_cursor(rows - 3, 0);
+        term_move_cursor(rows - 2, 0);
         if (*message) {
             term_clear_line();
             text(message, columns);
         } else
-            draw_entry_info(active, rows - 3, columns);
-        draw_status_bar(active, rows, columns, cd_mode);
+            term_clear_line();
+        draw_status_bar(active, rows, columns);
     }
     fflush(stdout);
     return target_offset;
@@ -1233,7 +1282,7 @@ static long scroll_position(long origin, long target, struct timespec start, str
 
 static void scroll_depth(const Directory *directories, size_t depth,
                          const Directory *parent_preview, const char *message,
-                         bool cd_mode, long target)
+                         long target)
 {
     struct timespec start;
     if (viewport_offset == target || clock_gettime(CLOCK_MONOTONIC, &start) < 0)
@@ -1252,7 +1301,7 @@ static void scroll_depth(const Directory *directories, size_t depth,
         long next = scroll_position(origin, target, start, now);
         if (next != viewport_offset) {
             viewport_offset = next;
-            draw(directories, depth, parent_preview, message, cd_mode, true, false);
+            draw(directories, depth, parent_preview, message, true, false);
         }
     }
 }
@@ -1264,7 +1313,7 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
         return false;
     const Directory *active = &directories[depth - 1];
     int columns = size.ws_col;
-    int available = size.ws_row - 6;
+    int available = size.ws_row - 5;
     int width = directory_width(active, columns - 2);
     int column = centered_column(active, columns);
     int old_first = first_visible(active, available, previous);
@@ -1306,8 +1355,8 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
                       focus_row(parent, available, parent->selected),
                       focus_row(active, available, active->selected), false);
     }
-    draw_entry_info(active, size.ws_row - 2, columns);
-    term_move_cursor(size.ws_row - 3, 0);
+    draw_status_bar(active, size.ws_row, columns);
+    term_move_cursor(size.ws_row - 2, 0);
     term_clear_line();
     fflush(stdout);
     return true;
@@ -1356,7 +1405,7 @@ static int read_key(void)
     if (read(STDIN_FILENO, &key, 1) != 1)
         return 0;
     if (prefix == '[' && key >= '0' && key <= '9') {
-        char sequence[32];
+        char sequence[64];
         size_t length = 0;
         sequence[length++] = (char)key;
         while (length < sizeof(sequence) - 1) {
@@ -1375,11 +1424,30 @@ static int read_key(void)
             return KEY_SHIFT_SPACE;
         char *end;
         long code = strtol(sequence, &end, 10);
+        long shifted = 0;
+        if (*end == ':') {
+            shifted = strtol(end + 1, &end, 10);
+            if (*end == ':')
+                strtol(end + 1, &end, 10);
+        }
         long modifiers = 1;
-        if (*end == ';')
-            modifiers = strtol(end + 1, &end, 10);
+        if (*end == ';') {
+            ++end;
+            if (*end != ';' && *end != 'u')
+                modifiers = strtol(end, &end, 10);
+        }
+        long event = 1;
+        if (*end == ':')
+            event = strtol(end + 1, &end, 10);
+        long produced = 0;
+        bool has_text = *end == ';';
+        if (has_text) {
+            produced = strtol(end + 1, &end, 10);
+            if (*end == ':')
+                produced = 0;
+        }
         if (*end == 'u') {
-            if (modifiers < 1)
+            if (modifiers < 1 || event == 3)
                 return 0;
             long bits = modifiers - 1;
             long keys = bits & ~(64L | 128L);
@@ -1387,6 +1455,12 @@ static int read_key(void)
                 return KEY_SHIFT_SPACE;
             if (code == 99 && keys == 4)
                 return 3;
+            if (keys == 0 || keys == 1) {
+                if (has_text)
+                    return produced >= 1 && produced <= 127 ? (int)produced : 0;
+                if (keys == 1 && shifted)
+                    return shifted >= 1 && shifted <= 127 ? (int)shifted : 0;
+            }
             if (code >= 'a' && code <= 'z' && (keys == 0 || keys == 1))
                 return (bits & 1) != ((bits & 64) != 0) ? (int)code - 'a' + 'A' : (int)code;
             return keys == 0 && code >= 1 && code <= 127 ? (int)code : 0;
@@ -1396,6 +1470,93 @@ static int read_key(void)
         return 0;
     }
     return key >= 'A' && key <= 'D' ? KEY_UP + key - 'A' : 0;
+}
+
+static void show_keys(bool cd_mode)
+{
+    static const char *const controls[] = {
+        "arrows / hjkl   browse",
+        "space           expand",
+        "H / shift-space parents",
+        "e / Enter       edit",
+        "n               new file",
+        "N               new directory",
+        "r               rename",
+        "d               delete",
+        "c               cd",
+        "Esc / q         quit"
+    };
+    int count = cd_mode ? 10 : 9;
+    int first = 0;
+    bool repaint = true;
+    while (!stopped) {
+        if (repaint || resized) {
+            struct winsize size;
+            if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 ||
+                size.ws_col < 12 || size.ws_row < 7)
+                break;
+            if (resized)
+                term_clear_screen();
+            int width = size.ws_col - 2 < 36 ? size.ws_col - 2 : 36;
+            int height = size.ws_row - 2 < count + 4 ? size.ws_row - 2 : count + 4;
+            int top = (size.ws_row - height) / 2;
+            int left = (size.ws_col - width) / 2;
+            int visible = height - 4;
+            if (first > count - visible)
+                first = count - visible;
+            term_set_color("48;5;234;38;5;110");
+            term_move_cursor(top, left);
+            fputs("╭", stdout);
+            for (int column = 0; column < width - 2; ++column)
+                fputs("─", stdout);
+            fputs("╮", stdout);
+            for (int row = 1; row < height - 1; ++row) {
+                term_move_cursor(top + row, left);
+                fputs("│", stdout);
+                term_set_color("48;5;234;38;5;252");
+                printf("%*s", width - 2, "");
+                term_set_color("48;5;234;38;5;110");
+                fputs("│", stdout);
+            }
+            term_move_cursor(top + height - 1, left);
+            fputs("╰", stdout);
+            for (int column = 0; column < width - 2; ++column)
+                fputs("─", stdout);
+            fputs("╯", stdout);
+            term_set_color("48;5;234;38;5;231;1");
+            term_move_cursor(top + 1, left + 2);
+            text("Keys", width - 4);
+            term_set_color("48;5;234;38;5;252");
+            for (int index = 0; index < visible; ++index) {
+                int control = first + index;
+                if (!cd_mode && control >= 8)
+                    ++control;
+                term_move_cursor(top + 2 + index, left + 2);
+                text(controls[control], width - 4);
+            }
+            term_set_color("48;5;234;38;5;110");
+            term_move_cursor(top + height - 2, left + 2);
+            text("Esc / q close", width - 4);
+            term_reset_style();
+            fflush(stdout);
+            repaint = false;
+            resized = 0;
+        }
+        int key = read_key();
+        if (key == 27 || key == 'q' || key == -1 || key == 3)
+            break;
+        struct winsize size;
+        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0)
+            continue;
+        int visible = (size.ws_row - 2 < count + 4 ? size.ws_row - 2 : count + 4) - 4;
+        if ((key == KEY_DOWN || key == 'j') && first + visible < count) {
+            ++first;
+            repaint = true;
+        } else if ((key == KEY_UP || key == 'k') && first > 0) {
+            --first;
+            repaint = true;
+        }
+    }
 }
 
 static bool prompt_name_input(const char *label, const char *initial, char *name, size_t capacity)
@@ -1410,7 +1571,7 @@ static bool prompt_name_input(const char *label, const char *initial, char *name
     bool dirty = true;
     while (!stopped) {
         if (dirty) {
-            term_move_cursor(size.ws_row - 3, 0);
+            term_move_cursor(size.ws_row - 2, 0);
             term_clear_line();
             const char *visible_label = strlen(label) >= size.ws_col ? "Name: " : label;
             int remaining = size.ws_col - (int)strlen(visible_label);
@@ -1458,7 +1619,7 @@ static bool confirm_remove_input(const char *name)
     struct winsize size;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 7)
         return false;
-    term_move_cursor(size.ws_row - 3, 0);
+    term_move_cursor(size.ws_row - 2, 0);
     term_clear_line();
     if (size.ws_col < 16) {
         text("Remove? y/N", size.ws_col);
@@ -1832,22 +1993,29 @@ int main(int argc, char **argv)
             if (resized) {
                 free(painted_cells);
                 painted_cells = NULL;
-                help_rows = 0;
             }
             bool show_ancestors = !parent_mode_set || parent_visible;
             const Directory *visible = show_ancestors ? directories : &directories[depth - 1];
             size_t visible_depth = show_ancestors ? depth : 1;
             const Directory *preview = parent_preview.path ? &parent_preview : NULL;
             bool animate = animate_depth && !resized;
-            long target = draw(visible, visible_depth, preview, message, cd_mode, animate, true);
+            long target = draw(visible, visible_depth, preview, message, animate, true);
             dirty = false;
             resized = 0;
             if (animate)
-                scroll_depth(visible, visible_depth, preview, message, cd_mode, target);
+                scroll_depth(visible, visible_depth, preview, message, target);
             animate_depth = false;
         }
         int key = read_key();
-        if (key == -1 || key == 'q' || key == 3)
+        if (key == '?') {
+            show_keys(cd_mode);
+            free(painted_cells);
+            painted_cells = NULL;
+            term_clear_screen();
+            dirty = true;
+            continue;
+        }
+        if (key == -1 || key == 'q' || key == 27 || key == 3)
             break;
         if (!key)
             continue;
