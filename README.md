@@ -4,7 +4,7 @@ A small Linux terminal file explorer written in C11. It opens the alternate
 screen and draws opened directories as a connected tree centered on the focused
 branch. Entries use `LS_COLORS` when set. No external libraries are needed.
 
-![roam terminal file explorer](screenshot.png)
+![roam terminal file explorer](images/screenshot.png)
 
 Build with `make`, then run `./roam [directory]`. Without a directory argument it
 starts in the current working directory. Run it from an interactive terminal.
