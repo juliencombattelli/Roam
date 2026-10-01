@@ -696,8 +696,13 @@ static void route_visible(unsigned char *routes, int columns, int rows,
             first = 0;
         if (last >= columns)
             last = columns - 1;
-        if (first < last)
+        if (first <= last) {
             route_line(routes, columns, rows, row, first, row, last);
+            if (column < 0 || end_column < 0)
+                routes[row * columns + first] |= LINE_LEFT;
+            if (column >= columns || end_column >= columns)
+                routes[row * columns + last] |= LINE_RIGHT;
+        }
     } else if (column == end_column && column >= 0 && column < columns) {
         int first = row < end_row ? row : end_row;
         int last = row > end_row ? row : end_row;
@@ -705,8 +710,13 @@ static void route_visible(unsigned char *routes, int columns, int rows,
             first = 2;
         if (last >= rows - 2)
             last = rows - 3;
-        if (first < last)
+        if (first <= last) {
             route_line(routes, columns, rows, first, column, last, column);
+            if (row < 2 || end_row < 2)
+                routes[first * columns + column] |= LINE_UP;
+            if (row >= rows - 2 || end_row >= rows - 2)
+                routes[last * columns + column] |= LINE_DOWN;
+        }
     }
 }
 
