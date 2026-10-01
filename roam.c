@@ -901,15 +901,14 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
     putchar(' ');
     term_move_cursor(rows - 1, 1);
     char *path = strdup(focused ? focused : active->path);
-    const char *segments[3] = {NULL};
+    const char *segments[2] = {NULL};
     int count = 0;
     if (path) {
         char *state = NULL;
         for (char *part = strtok_r(path, "/", &state); part;
              part = strtok_r(NULL, "/", &state)) {
-            if (count == 3) {
+            if (count == 2) {
                 segments[0] = segments[1];
-                segments[1] = segments[2];
                 --count;
             }
             segments[count++] = part;
@@ -917,11 +916,16 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
     }
     if (!count)
         segments[count++] = focused ? focused : active->path;
+    else if (count == 1 && path && path[0] == '/') {
+        segments[1] = segments[0];
+        segments[0] = "/";
+        count = 2;
+    }
     int first = 0;
     int breadcrumb_width = 0;
     for (int index = 0; index < count; ++index)
         breadcrumb_width += text_width(segments[index], columns) + (index != 0 ? 3 : 0);
-    while (first < count - 1 && breadcrumb_width > left_limit - 10) {
+    while (first < count - 1 && breadcrumb_width > left_limit - 2) {
         breadcrumb_width -= text_width(segments[first], columns) + 3;
         ++first;
     }
