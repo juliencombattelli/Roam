@@ -30,7 +30,6 @@ typedef struct {
     struct dirent **entries;
     int count;
     int selected;
-    int width;
 } Directory;
 
 typedef struct {
@@ -200,11 +199,6 @@ static void term_set_color(const char *color)
     printf("\033[%sm", color);
 }
 
-static void term_bold(void)
-{
-    fputs("\033[1m", stdout);
-}
-
 static void term_reverse_video(void)
 {
     fputs("\033[7m", stdout);
@@ -241,21 +235,10 @@ static int load_directory(char *path, Directory *directory)
     int count = scandir(path, &entries, accept_entry, alphasort);
     if (count < 0)
         return -1;
-    const char *title = strrchr(path, '/');
-    title = title && title[1] ? title + 1 : path;
-    int width = text_width(title, INT_MAX - 4);
-    if (!count && width < 7)
-        width = 7;
-    for (int index = 0; index < count; ++index) {
-        int entry_width = 1 + text_width(entries[index]->d_name, INT_MAX - 4);
-        if (entry_width > width)
-            width = entry_width;
-    }
     *directory = (Directory){
         .path = path,
         .entries = entries,
         .count = count,
-        .width = width < 2 ? 2 : width,
     };
     for (size_t saved = 0; saved < focused_count; ++saved)
         if (strcmp(focused_entries[saved].path, path) == 0)
@@ -480,11 +463,6 @@ static int text_width(const char *source, int limit)
     return width > limit ? limit : width;
 }
 
-static int directory_width(const Directory *directory, int limit)
-{
-    return directory->width < limit ? directory->width : limit;
-}
-
 static int content_width(const Directory *directory, int limit)
 {
     int width = directory->count ? 2 : 9;
@@ -494,65 +472,6 @@ static int content_width(const Directory *directory, int limit)
             width = entry_width;
     }
     return width < limit ? width : limit;
-}
-
-static int centered_column(const Directory *directory, int columns)
-{
-    return (columns - directory_width(directory, columns - 2)) / 2;
-}
-
-static int first_visible(const Directory *directory, int available, int selected)
-{
-    int first = directory->count > available ? selected - available / 2 : 0;
-    if (first < 0)
-        first = 0;
-    if (first > directory->count - available)
-        first = directory->count - available;
-    return first < 0 ? 0 : first;
-}
-
-static int entry_top(const Directory *directory, int available)
-{
-    return directory->count < available ? 3 + (available - directory->count) / 2 : 3;
-}
-
-static int focus_row(const Directory *directory, int available, int selected)
-{
-    if (!directory->count)
-        return 3 + available / 2;
-    return entry_top(directory, available) + selected -
-           first_visible(directory, available, selected);
-}
-
-static void draw_entry(const Directory *directory, int index, int row, int column,
-                       int width, int skip, bool active)
-{
-    term_move_cursor(row, column);
-    if (!skip) {
-        char *path = child_path(directory->path, directory->entries[index]->d_name);
-        bool opened = path && is_open(path);
-        fputs(opened ? "▾" : index == directory->selected ? "►" : " ", stdout);
-        free(path);
-    }
-    const char *color = color_rule_count
-        ? entry_color(directory, directory->entries[index]->d_name) : NULL;
-    if (color)
-        term_set_color(color);
-    if (active && index == directory->selected) {
-        term_reverse_video();
-    } else if (index == directory->selected) {
-        term_bold();
-    }
-    clipped_text(directory->entries[index]->d_name, skip ? skip - 1 : 0,
-                 width - (skip == 0));
-    term_reset_style();
-}
-
-static int link_start(const Directory *directory, int column, int width)
-{
-    const char *name = directory->entries[directory->selected]->d_name;
-    int start = column + 1 + text_width(name, width - 1);
-    return start < 0 ? 0 : start;
 }
 
 typedef struct {
@@ -637,29 +556,6 @@ static void free_columns(Column *columns, size_t count)
 {
     (void)count;
     free(columns);
-}
-
-static void draw_link(int start, int end, int parent_row, int child_row, bool erase)
-{
-    if (start > end - 2)
-        start = end - 2;
-    term_move_cursor(parent_row, start);
-    int bend = end - 2;
-    for (int column = start; column < (parent_row == child_row ? end : bend); ++column)
-        fputs(erase ? " " : "─", stdout);
-    if (parent_row == child_row)
-        return;
-    fputs(erase ? " " : parent_row < child_row ? "┐" : "┘", stdout);
-    for (int row = parent_row - 1; row > child_row; --row) {
-        term_move_cursor(row, bend);
-        fputs(erase ? " " : "│", stdout);
-    }
-    for (int row = parent_row + 1; row < child_row; ++row) {
-        term_move_cursor(row, bend);
-        fputs(erase ? " " : "│", stdout);
-    }
-    term_move_cursor(child_row, bend);
-    fputs(erase ? "  " : parent_row < child_row ? "└─" : "┌─", stdout);
 }
 
 enum { LINE_UP = 1, LINE_RIGHT = 2, LINE_DOWN = 4, LINE_LEFT = 8 };
@@ -1318,62 +1214,6 @@ static void scroll_depth(const Directory *directories, size_t depth,
             draw(directories, depth, parent_preview, message, true, false);
         }
     }
-}
-
-static bool redraw_focus(const Directory *directories, size_t depth, int previous)
-{
-    struct winsize size;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_col < 12 || size.ws_row < 7)
-        return false;
-    const Directory *active = &directories[depth - 1];
-    int columns = size.ws_col;
-    int available = size.ws_row - 5;
-    int width = directory_width(active, columns - 2);
-    int column = centered_column(active, columns);
-    int old_first = first_visible(active, available, previous);
-    int first = first_visible(active, available, active->selected);
-    int visible = active->count < available ? active->count : available;
-    int top = entry_top(active, available);
-
-    if (depth > 1) {
-        const Directory *parent = &directories[depth - 2];
-        int parent_width = directory_width(parent, columns - 2);
-        int parent_column = column - parent_width - 4;
-        if (parent_column + parent_width > 0) {
-            int parent_row = focus_row(parent, available, parent->selected);
-            draw_link(link_start(parent, parent_column, parent_width), column,
-                      parent_row, focus_row(active, available, previous), true);
-        }
-    }
-    if (old_first == first) {
-        int old_row = top + previous - first;
-        int new_row = top + active->selected - first;
-        term_move_cursor(old_row, column);
-        printf("%-*s", width, "");
-        draw_entry(active, previous, old_row, column, width, 0, true);
-        term_move_cursor(new_row, column);
-        printf("%-*s", width, "");
-        draw_entry(active, active->selected, new_row, column, width, 0, true);
-    } else {
-        for (int offset = 0; offset < visible; ++offset) {
-            term_move_cursor(top + offset, column);
-            printf("%-*s", width, "");
-            draw_entry(active, first + offset, top + offset, column, width, 0, true);
-        }
-    }
-    if (depth > 1) {
-        const Directory *parent = &directories[depth - 2];
-        if (column - 4 > 0 && column - 4 - directory_width(parent, columns - 2) < columns)
-            draw_link(link_start(parent, column - directory_width(parent, columns - 2) - 4,
-                                 directory_width(parent, columns - 2)), column,
-                      focus_row(parent, available, parent->selected),
-                      focus_row(active, available, active->selected), false);
-    }
-    draw_status_bar(active, size.ws_row, columns);
-    term_move_cursor(size.ws_row - 1, 0);
-    term_clear_line();
-    fflush(stdout);
-    return true;
 }
 
 enum { KEY_SHIFT_SPACE = 256, KEY_UP, KEY_DOWN, KEY_RIGHT, KEY_LEFT };
@@ -2121,14 +1961,8 @@ int main(int argc, char **argv)
                 load_parent_directory(&directories[0], &parent_preview);
             dirty = true;
         }
-        if (selection_changed && parent_mode_set &&
-            ((depth == 1 && parent_preview.path) || (depth > 1 && !parent_visible)))
-            dirty = true;
         if (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') {
             if (current->selected == previous && !had_message && !resized && !dirty)
-                continue;
-            if (current->selected != previous && !resized && !dirty && !opened_count &&
-                redraw_focus(directories, depth, previous))
                 continue;
         }
         if ((key == KEY_RIGHT || key == KEY_LEFT || key == 'h' || key == 'l') &&
