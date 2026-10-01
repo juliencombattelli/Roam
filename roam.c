@@ -45,6 +45,102 @@ static volatile sig_atomic_t resized;
 static ColorRule *color_rules;
 static size_t color_rule_count;
 static char *color_storage;
+static char **opened_paths;
+static size_t opened_count;
+static Directory **cached_directories;
+static size_t cached_count;
+static long viewport_offset;
+static bool viewport_initialized;
+static unsigned char *painted_cells;
+static int painted_columns;
+static int painted_rows;
+static int help_columns;
+static int help_rows;
+static struct {
+    char *path;
+    char *entry;
+} *focused_entries;
+static size_t focused_count;
+
+static void remember_selection(const Directory *directory)
+{
+    if (!directory->count)
+        return;
+    char *entry = strdup(directory->entries[directory->selected]->d_name);
+    if (!entry)
+        return;
+    for (size_t index = 0; index < focused_count; ++index)
+        if (strcmp(focused_entries[index].path, directory->path) == 0) {
+            free(focused_entries[index].entry);
+            focused_entries[index].entry = entry;
+            return;
+        }
+    char *path = strdup(directory->path);
+    if (!path) {
+        free(entry);
+        return;
+    }
+    void *grown = realloc(focused_entries, (focused_count + 1) * sizeof(*focused_entries));
+    if (!grown) {
+        free(entry);
+        free(path);
+        return;
+    }
+    focused_entries = grown;
+    focused_entries[focused_count].path = path;
+    focused_entries[focused_count++].entry = entry;
+}
+
+static bool is_open(const char *path)
+{
+    for (size_t index = 0; index < opened_count; ++index)
+        if (strcmp(opened_paths[index], path) == 0)
+            return true;
+    return false;
+}
+
+static void toggle_open(char *path)
+{
+    for (size_t index = 0; index < opened_count; ++index) {
+        if (strcmp(opened_paths[index], path) == 0) {
+            free(opened_paths[index]);
+            opened_paths[index] = opened_paths[--opened_count];
+            free(path);
+            return;
+        }
+    }
+    char **grown = realloc(opened_paths, (opened_count + 1) * sizeof(*opened_paths));
+    if (grown) {
+        opened_paths = grown;
+        opened_paths[opened_count++] = path;
+    } else {
+        free(path);
+    }
+}
+
+static void rename_saved_path(char **path, const char *old_path, const char *new_path)
+{
+    size_t prefix = strlen(old_path);
+    if (strncmp(*path, old_path, prefix) != 0 ||
+        ((*path)[prefix] && (*path)[prefix] != '/'))
+        return;
+    size_t length = strlen(new_path) + strlen(*path + prefix) + 1;
+    char *updated = malloc(length);
+    if (!updated)
+        return;
+    snprintf(updated, length, "%s%s", new_path, *path + prefix);
+    free(*path);
+    *path = updated;
+}
+
+static void rename_opened_paths(const char *old_path, const char *new_path)
+{
+    for (size_t index = 0; index < opened_count; ++index) {
+        rename_saved_path(&opened_paths[index], old_path, new_path);
+    }
+    for (size_t index = 0; index < focused_count; ++index)
+        rename_saved_path(&focused_entries[index].path, old_path, new_path);
+}
 
 static void term_pop_keyboard_mode(void)
 {
@@ -82,6 +178,7 @@ static void term_exit_alternate_buffer(void)
 static void term_enter_alternate_buffer(void)
 {
     fputs("\033[?1049h", stdout);
+    help_rows = 0;
     term_hide_cursor();
     term_push_keyboard_mode();
 }
@@ -109,11 +206,6 @@ static void term_set_color(const char *color)
 static void term_bold(void)
 {
     fputs("\033[1m", stdout);
-}
-
-static void term_dim(void)
-{
-    fputs("\033[2m", stdout);
 }
 
 static void term_reverse_video(void)
@@ -168,6 +260,13 @@ static int load_directory(char *path, Directory *directory)
         .count = count,
         .width = width < 2 ? 2 : width,
     };
+    for (size_t saved = 0; saved < focused_count; ++saved)
+        if (strcmp(focused_entries[saved].path, path) == 0)
+            for (int index = 0; index < count; ++index)
+                if (strcmp(focused_entries[saved].entry, entries[index]->d_name) == 0) {
+                    directory->selected = index;
+                    return 0;
+                }
     return 0;
 }
 
@@ -177,6 +276,17 @@ static void free_directory(Directory *directory)
         free(directory->entries[index]);
     free(directory->entries);
     free(directory->path);
+}
+
+static void clear_directory_cache(void)
+{
+    for (size_t index = 0; index < cached_count; ++index) {
+        free_directory(cached_directories[index]);
+        free(cached_directories[index]);
+    }
+    free(cached_directories);
+    cached_directories = NULL;
+    cached_count = 0;
 }
 
 static char *child_path(const char *parent, const char *name)
@@ -378,6 +488,17 @@ static int directory_width(const Directory *directory, int limit)
     return directory->width < limit ? directory->width : limit;
 }
 
+static int content_width(const Directory *directory, int limit)
+{
+    int width = directory->count ? 2 : 9;
+    for (int entry = 0; entry < directory->count; ++entry) {
+        int entry_width = 4 + text_width(directory->entries[entry]->d_name, limit - 4);
+        if (entry_width > width)
+            width = entry_width;
+    }
+    return width < limit ? width : limit;
+}
+
 static int centered_column(const Directory *directory, int columns)
 {
     return (columns - directory_width(directory, columns - 2)) / 2;
@@ -410,8 +531,12 @@ static void draw_entry(const Directory *directory, int index, int row, int colum
                        int width, int skip, bool active)
 {
     term_move_cursor(row, column);
-    if (!skip)
-        fputs(index == directory->selected ? "►" : " ", stdout);
+    if (!skip) {
+        char *path = child_path(directory->path, directory->entries[index]->d_name);
+        bool opened = path && is_open(path);
+        fputs(opened ? "▾" : index == directory->selected ? "►" : " ", stdout);
+        free(path);
+    }
     const char *color = color_rule_count
         ? entry_color(directory, directory->entries[index]->d_name) : NULL;
     if (color)
@@ -431,6 +556,90 @@ static int link_start(const Directory *directory, int column, int width)
     const char *name = directory->entries[directory->selected]->d_name;
     int start = column + 1 + text_width(name, width - 1);
     return start < 0 ? 0 : start;
+}
+
+typedef struct {
+    Directory *directory;
+    size_t parent;
+    int parent_entry;
+    int level;
+    int lane;
+    int row_start;
+} Column;
+
+typedef struct {
+    int width;
+    int groups;
+    long position;
+} Level;
+
+static int group_length(const Column *branch)
+{
+    return branch->directory->count ? branch->directory->count : 1;
+}
+
+static int ideal_start(const Column *branches, size_t index)
+{
+    const Column *branch = &branches[index];
+    return branches[branch->parent].row_start + branch->parent_entry -
+           (group_length(branch) - 1) / 2;
+}
+
+static void collect_columns(Column *columns, size_t *count, size_t capacity, size_t parent,
+                            Directory *directories, size_t depth)
+{
+    Directory *directory = columns[parent].directory;
+    for (int entry = 0; entry < directory->count; ++entry) {
+        char *path = child_path(directory->path, directory->entries[entry]->d_name);
+        if (!path)
+            continue;
+        Directory *child = NULL;
+        for (size_t index = 0; index < depth; ++index)
+            if (strcmp(directories[index].path, path) == 0) {
+                child = &directories[index];
+                break;
+            }
+        if ((!child && !is_open(path)) || *count == capacity) {
+            free(path);
+            continue;
+        }
+        if (!child)
+            for (size_t index = 0; index < cached_count; ++index)
+                if (strcmp(cached_directories[index]->path, path) == 0) {
+                    child = cached_directories[index];
+                    break;
+                }
+        if (!child) {
+            child = malloc(sizeof(*child));
+            if (!child || load_directory(path, child) < 0) {
+                free(child);
+                free(path);
+                continue;
+            }
+            Directory **grown = realloc(cached_directories,
+                                        (cached_count + 1) * sizeof(*cached_directories));
+            if (!grown) {
+                free_directory(child);
+                free(child);
+                continue;
+            }
+            cached_directories = grown;
+            cached_directories[cached_count++] = child;
+        } else {
+            free(path);
+        }
+        size_t index = (*count)++;
+        columns[index] = (Column){.directory = child,
+                      .parent = parent, .parent_entry = entry,
+                      .level = columns[parent].level + 1};
+        collect_columns(columns, count, capacity, index, directories, depth);
+    }
+}
+
+static void free_columns(Column *columns, size_t count)
+{
+    (void)count;
+    free(columns);
 }
 
 static void draw_link(int start, int end, int parent_row, int child_row, bool erase)
@@ -456,16 +665,113 @@ static void draw_link(int start, int end, int parent_row, int child_row, bool er
     fputs(erase ? "  " : parent_row < child_row ? "└─" : "┌─", stdout);
 }
 
+enum { LINE_UP = 1, LINE_RIGHT = 2, LINE_DOWN = 4, LINE_LEFT = 8 };
+
+static void route_line(unsigned char *routes, int columns, int rows,
+                       int row, int column, int end_row, int end_column)
+{
+    if (row < 0 || row >= rows || end_row < 0 || end_row >= rows ||
+        column < 0 || column >= columns || end_column < 0 || end_column >= columns)
+        return;
+    while (row != end_row || column != end_column) {
+        int next_row = row + (end_row > row) - (end_row < row);
+        int next_column = column + (end_column > column) - (end_column < column);
+        unsigned char forward = next_row > row ? LINE_DOWN : next_row < row ? LINE_UP :
+                                next_column > column ? LINE_RIGHT : LINE_LEFT;
+        unsigned char backward = next_row > row ? LINE_UP : next_row < row ? LINE_DOWN :
+                                 next_column > column ? LINE_LEFT : LINE_RIGHT;
+        routes[row * columns + column] |= forward;
+        routes[next_row * columns + next_column] |= backward;
+        row = next_row;
+        column = next_column;
+    }
+}
+
+static void route_visible(unsigned char *routes, int columns, int rows,
+                          int row, int column, int end_row, int end_column)
+{
+    if (row == end_row) {
+        if (row < 2 || row >= rows - 3)
+            return;
+        int first = column < end_column ? column : end_column;
+        int last = column > end_column ? column : end_column;
+        if (first < 0)
+            first = 0;
+        if (last >= columns)
+            last = columns - 1;
+        if (first < last)
+            route_line(routes, columns, rows, row, first, row, last);
+    } else if (column == end_column && column >= 0 && column < columns) {
+        int first = row < end_row ? row : end_row;
+        int last = row > end_row ? row : end_row;
+        if (first < 2)
+            first = 2;
+        if (last >= rows - 3)
+            last = rows - 4;
+        if (first < last)
+            route_line(routes, columns, rows, first, column, last, column);
+    }
+}
+
+static void draw_routes(const unsigned char *routes, int columns, int rows)
+{
+    static const char *const glyph[] = {
+        "", "│", "─", "╰", "│", "│", "╭", "├",
+        "─", "╯", "─", "┴", "╮", "┤", "┬", "┼"
+    };
+    for (int row = 1; row < rows - 3; ++row)
+        for (int column = 0; column < columns; ++column)
+            if (routes[row * columns + column]) {
+                term_move_cursor(row, column);
+                fputs(glyph[routes[row * columns + column]], stdout);
+            }
+}
+
+static void mark_cells(unsigned char *frame, int columns, int rows,
+                       int row, int column, int width)
+{
+    if (!frame || row < 2 || row >= rows - 3 || width <= 0)
+        return;
+    int first = column < 0 ? 0 : column;
+    int last = column + width > columns ? columns : column + width;
+    if (first < last)
+        memset(frame + (size_t)row * columns + first, 1, (size_t)(last - first));
+}
+
+static void erase_old_cells(const unsigned char *frame, int columns, int rows)
+{
+    if (!painted_cells || !frame)
+        return;
+    for (int row = 2; row < rows - 3; ++row)
+        for (int column = 0; column < columns;) {
+            size_t cell = (size_t)row * columns + column;
+            if (!painted_cells[cell] || frame[cell]) {
+                ++column;
+                continue;
+            }
+            term_move_cursor(row, column);
+            do {
+                putchar(' ');
+                ++column;
+                cell = (size_t)row * columns + column;
+            } while (column < columns && painted_cells[cell] && !frame[cell]);
+        }
+}
+
 static void draw_entry_info(const Directory *directory, int row, int columns)
 {
     term_move_cursor(row, 0);
-    term_clear_line();
-    if (!directory->count)
+    if (!directory->count) {
+        printf("%*s", columns, "");
         return;
+    }
     char *path = child_path(directory->path, directory->entries[directory->selected]->d_name);
     struct stat info;
     if (!path || lstat(path, &info) < 0) {
         text("Metadata unavailable", columns);
+        int printed = text_width("Metadata unavailable", columns);
+        if (printed < columns)
+            printf("%*s", columns - printed, "");
         free(path);
         return;
     }
@@ -524,96 +830,431 @@ static void draw_entry_info(const Directory *directory, int row, int columns)
         snprintf(modified, sizeof(modified), "?");
     snprintf(details, sizeof(details), " | %s | %s | %s | %s",
              owner_name, group_name, size_text, modified);
-    if (columns > 10)
+    if (columns > 10) {
         text(details, columns - 10);
+        int printed = text_width(details, columns - 10);
+        if (printed < columns - 10)
+            printf("%*s", columns - 10 - printed, "");
+    }
 }
 
-static void draw(const Directory *directories, size_t depth, const Directory *preview,
-                 const Directory *parent_preview, const char *message, bool cd_mode)
+static void draw_status_bar(const Directory *active, int rows, int columns, bool cd_mode)
+{
+    term_move_cursor(rows - 2, 0);
+    term_set_color("48;5;23;38;5;252");
+    putchar(' ');
+    term_move_cursor(rows - 2, 1);
+    char *path = strdup(active->path);
+    const char *segments[3] = {NULL};
+    int count = 0;
+    if (path) {
+        char *state = NULL;
+        for (char *part = strtok_r(path, "/", &state); part;
+             part = strtok_r(NULL, "/", &state)) {
+            if (count == 3) {
+                segments[0] = segments[1];
+                segments[1] = segments[2];
+                --count;
+            }
+            segments[count++] = part;
+        }
+    }
+    if (!count)
+        segments[count++] = active->path;
+    int first = 0;
+    int breadcrumb_width = 0;
+    for (int index = 0; index < count; ++index)
+        breadcrumb_width += text_width(segments[index], columns) + (index != 0 ? 3 : 0);
+    while (first < count - 1 && breadcrumb_width > columns - 18) {
+        breadcrumb_width -= text_width(segments[first], columns) + 3;
+        ++first;
+    }
+    int used = 1;
+    for (int index = first; index < count && used < columns - 1; ++index) {
+        if (index != first) {
+            if (columns - used - 1 < 4)
+                break;
+            term_set_color("48;5;23;38;5;110");
+            text(" › ", columns - used - 1);
+            used += 3;
+        }
+        term_set_color(index == count - 1 ? "48;5;23;38;5;231;1" : "48;5;23;38;5;80");
+        int width = columns - used - 1;
+        clipped_text(segments[index], 0, width);
+        used += text_width(segments[index], width);
+    }
+    free(path);
+    term_set_color("48;5;23;38;5;180");
+    char summary[64];
+    snprintf(summary, sizeof(summary), "  |  %d %s", active->count,
+             active->count == 1 ? "item" : "items");
+    int remaining = columns - used - 1;
+    if (remaining > 0) {
+        text(summary, remaining);
+        used += text_width(summary, remaining);
+    }
+    term_set_color("48;5;23;38;5;252");
+    if (used < columns)
+        printf("%*s", columns - used, "");
+
+    if (help_columns != columns || help_rows != rows) {
+        term_move_cursor(rows - 1, 0);
+        term_set_color("48;5;23;38;5;252");
+        term_clear_line();
+        term_move_cursor(rows - 1, 1);
+        term_set_color("48;5;23;38;5;152");
+        text(cd_mode ? "arrows browse   space expand   H parents   e edit   n/N new   r rename   d delete   c cd   q quit"
+                     : "arrows browse   space expand   H parents   e edit   n/N new   r rename   d delete   q quit",
+             columns - 2);
+        help_columns = columns;
+        help_rows = rows;
+    }
+    term_reset_style();
+}
+
+static long draw(const Directory *directories, size_t depth,
+                 const Directory *parent_preview, const char *message, bool cd_mode,
+                 bool preserve_offset, bool redraw_chrome)
 {
     struct winsize size;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || !size.ws_col || !size.ws_row)
-        return;
+        return viewport_offset;
     int columns = size.ws_col;
     int rows = size.ws_row;
-    term_clear_screen();
     if (columns < 12 || rows < 7) {
+        free(painted_cells);
+        painted_cells = NULL;
+        term_clear_screen();
         term_move_cursor(0, 0);
         text("Terminal too small", columns);
         fflush(stdout);
-        return;
+        return viewport_offset;
     }
 
     const Directory *active = &directories[depth - 1];
-    term_move_cursor(0, 0);
-    term_bold();
-    text(active->path, columns);
-    term_reset_style();
 
-    int available = rows - 6;
-    int active_width = directory_width(active, columns - 2);
-    int active_column = centered_column(active, columns);
-    long position = 0;
-    int child_row = -1;
-    size_t active_step = depth + (parent_preview != NULL);
-    for (size_t step = active_step + (preview != NULL); step > 0; --step) {
-        size_t index = step - 1;
-        const Directory *directory = step > active_step ? preview
-            : parent_preview && step == 1 ? parent_preview
-            : &directories[index - (parent_preview != NULL)];
-        int width = directory_width(directory, columns - 2);
-        if (step > active_step)
-            position = active_column + active_width + 4;
-        else if (step == active_step)
-            position = active_column;
-        else
-            position -= width + 4;
+    size_t capacity = opened_count + depth + 2;
+    Column *branches = calloc(capacity, sizeof(*branches));
+    if (!branches)
+        return viewport_offset;
+    branches[0].directory = parent_preview ? (Directory *)parent_preview : (Directory *)&directories[0];
+    size_t count = 1;
+    collect_columns(branches, &count, capacity, 0, (Directory *)directories, depth);
+    size_t active_index = 0;
+    Level *levels = calloc(count, sizeof(*levels));
+    if (!levels) {
+        free_columns(branches, count);
+        return viewport_offset;
+    }
+    for (size_t index = 0; index < count; ++index)
+        if (strcmp(branches[index].directory->path, active->path) == 0)
+            active_index = index;
+    int last_level = 0;
+    for (size_t index = 0; index < count; ++index) {
+        int level = branches[index].level;
+        if (level > last_level)
+            last_level = level;
+        int width = content_width(branches[index].directory, columns - 2);
+        if (width > levels[level].width)
+            levels[level].width = width;
+        levels[level].groups++;
+    }
+    size_t *spine = malloc((size_t)(last_level + 1) * sizeof(*spine));
+    size_t *group = malloc(count * sizeof(*group));
+    if (!spine || !group) {
+        free(spine);
+        free(group);
+        free(levels);
+        free_columns(branches, count);
+        return viewport_offset;
+    }
+    for (int level = 0; level <= last_level; ++level)
+        spine[level] = SIZE_MAX;
+    size_t ancestor = active_index;
+    while (true) {
+        spine[branches[ancestor].level] = ancestor;
+        if (!ancestor)
+            break;
+        ancestor = branches[ancestor].parent;
+    }
+    for (int level = branches[active_index].level + 1; level <= last_level; ++level) {
+        size_t parent = spine[level - 1];
+        for (size_t index = 1; index < count; ++index)
+            if (branches[index].parent == parent &&
+                branches[index].parent_entry == branches[parent].directory->selected) {
+                spine[level] = index;
+                break;
+            }
+        if (spine[level] == SIZE_MAX)
+            break;
+    }
+    for (int level = 0; level <= last_level; ++level) {
+        size_t groups = 0;
+        size_t pin = SIZE_MAX;
+        for (size_t index = 0; index < count; ++index)
+            if (branches[index].level == level) {
+                if (index == spine[level])
+                    pin = groups;
+                group[groups++] = index;
+            }
+        size_t below = 0;
+        int previous_end = INT_MIN / 2;
+        if (pin != SIZE_MAX) {
+            size_t pinned = group[pin];
+            int entry = branches[pinned].directory->selected;
+            if (level < last_level && spine[level + 1] != SIZE_MAX &&
+                branches[spine[level + 1]].parent == pinned)
+                entry = branches[spine[level + 1]].parent_entry;
+            branches[pinned].row_start = -entry;
+            int next_start = branches[pinned].row_start;
+            for (size_t slot = pin; slot > 0; --slot) {
+                size_t index = group[slot - 1];
+                int ideal = ideal_start(branches, index);
+                int limit = next_start - group_length(&branches[index]) - 1;
+                branches[index].row_start = ideal < limit ? ideal : limit;
+                next_start = branches[index].row_start;
+            }
+            previous_end = branches[pinned].row_start + group_length(&branches[pinned]) - 1;
+            below = pin + 1;
+        }
+        for (size_t slot = below; slot < groups; ++slot) {
+            size_t index = group[slot];
+            int ideal = level ? ideal_start(branches, index) : 0;
+            int limit = previous_end + 2;
+            branches[index].row_start = ideal > limit ? ideal : limit;
+            previous_end = branches[index].row_start + group_length(&branches[index]) - 1;
+        }
+    }
+    free(group);
+    free(spine);
+    for (int level = 1; level <= last_level; ++level) {
+        int raised = 0;
+        for (size_t index = 1; index < count; ++index)
+            if (branches[index].level == level &&
+                branches[index].row_start + group_length(&branches[index]) - 1 <
+                    branches[branches[index].parent].row_start + branches[index].parent_entry)
+                ++raised;
+        int up = 0;
+        int down = 0;
+        for (size_t index = 1; index < count; ++index) {
+            if (branches[index].level != level)
+                continue;
+            bool above = branches[index].row_start + group_length(&branches[index]) - 1 <
+                         branches[branches[index].parent].row_start + branches[index].parent_entry;
+            branches[index].lane = above ? raised - 1 - up++ : down++;
+        }
+    }
+    for (int level = 1; level <= last_level; ++level)
+        levels[level].position = levels[level - 1].position + levels[level - 1].width +
+                                 levels[level].groups + 3;
+    long target_offset = (columns - levels[branches[active_index].level].width) / 2 -
+                         levels[branches[active_index].level].position;
+    if (!preserve_offset || !viewport_initialized) {
+        viewport_offset = target_offset;
+        viewport_initialized = true;
+    }
+    long offset = viewport_offset;
+    int center_row = 2 + (rows - 5) / 2;
+    const Directory *root = branches[0].directory;
+    const char *root_name = strrchr(root->path, '/');
+    root_name = root_name && root_name[1] ? root_name + 1 : root->path;
+    int root_column = (int)(levels[0].position + offset);
+    int root_row = center_row + branches[0].row_start + root->selected;
+    int root_width = text_width(root_name, columns);
+    bool root_label_visible = root_row >= 2 && root_row < rows - 3 &&
+                              root_column > root_width + 2;
+    size_t cells = (size_t)rows * columns;
+    unsigned char *frame = calloc(cells, 1);
+    if (!frame || !painted_cells || painted_columns != columns || painted_rows != rows) {
+        term_clear_screen();
+        free(painted_cells);
+        painted_cells = NULL;
+    }
+    unsigned char *rails = calloc(cells, 1);
+    if (rails) {
+        const Column *branch = &branches[0];
+        int column = (int)(levels[0].position + offset);
+        int top = center_row + branch->row_start;
+        int entries = group_length(branch);
+        for (int entry = 0; entry < entries; ++entry) {
+            int row = top + entry;
+            if (row >= 2 && row < rows - 3)
+                route_line(rails, columns, rows, row, column, row, column + 1);
+        }
+        int first = top < 2 ? 2 : top;
+        int last = top + entries - 1;
+        if (last >= rows - 3)
+            last = rows - 4;
+        if (first < last)
+            route_line(rails, columns, rows, first, column, last, column);
+        if (root_label_visible)
+            route_line(rails, columns, rows, root_row, root_column - 1,
+                       root_row, root_column);
+    }
+    for (size_t index = 0; index < count; ++index) {
+        const Column *branch = &branches[index];
+        const Directory *directory = branch->directory;
+        const Level *level = &levels[branch->level];
+        int width = level->width;
+        long position = level->position + offset;
         if (position + width <= 0 || position >= columns) {
-            child_row = -1;
             continue;
         }
         int column = (int)position;
         int left = column < 0 ? 0 : column;
-        int skip = column < 0 ? -column : 0;
         int visible_width = column < 0 ? column + width : width;
         if (visible_width > columns - left)
             visible_width = columns - left;
-        const char *title = strrchr(directory->path, '/');
-        title = title && title[1] ? title + 1 : directory->path;
-        term_move_cursor(2, left);
-        term_bold();
-        clipped_text(title, skip, visible_width);
-        term_reset_style();
-
-        int first = first_visible(directory, available, directory->selected);
-        int visible = directory->count < available ? directory->count : available;
-        int top = entry_top(directory, available);
-        int selected_row = focus_row(directory, available, directory->selected);
+        int name_column = column + 2;
+        int name_left = name_column < 0 ? 0 : name_column;
+        int name_skip = name_column < 0 ? -name_column : 0;
+        int name_width = visible_width - 2;
+        int entry_top_row = center_row + branch->row_start;
         if (!directory->count) {
-            term_move_cursor(3 + available / 2, left);
-            clipped_text("(empty)", skip, visible_width);
+            if (entry_top_row >= 2 && entry_top_row < rows - 3 && name_width > 0) {
+                term_move_cursor(entry_top_row, name_left);
+                clipped_text("(empty)", name_skip, name_width);
+                int label_width = text_width("(empty)", name_skip + name_width) - name_skip;
+                mark_cells(frame, columns, rows, entry_top_row, name_left, label_width);
+            }
         }
-        for (int offset = 0; offset < visible; ++offset) {
-            int entry_index = first + offset;
-            int row = top + offset;
-            draw_entry(directory, entry_index, row, left, visible_width, skip,
-                       step == active_step);
+        for (int entry = 0; entry < directory->count; ++entry) {
+            int row = entry_top_row + entry;
+            if (row >= 2 && row < rows - 3 && name_width > 0) {
+                const char *color = color_rule_count
+                    ? entry_color(directory, directory->entries[entry]->d_name) : NULL;
+                if (color)
+                    term_set_color(color);
+                if (index == active_index && entry == directory->selected) {
+                    term_bold();
+                    term_set_color(color ? "48;5;237" : "48;5;237;38;5;231");
+                }
+                term_move_cursor(row, name_left);
+                clipped_text(directory->entries[entry]->d_name, name_skip, name_width);
+                char *path = child_path(directory->path, directory->entries[entry]->d_name);
+                struct stat info;
+                int printed = text_width(directory->entries[entry]->d_name,
+                                         name_skip + name_width) - name_skip;
+                if (printed < 0)
+                    printed = 0;
+                if (path && stat(path, &info) == 0 && S_ISDIR(info.st_mode) &&
+                    printed + 2 <= name_width) {
+                    fputs(" ›", stdout);
+                    printed += 2;
+                }
+                mark_cells(frame, columns, rows, row, name_left, printed);
+                free(path);
+                term_reset_style();
+            }
         }
-        if (child_row >= 0)
-            draw_link(link_start(directory, column, width), column + width + 4,
-                      selected_row, child_row, false);
-        child_row = selected_row;
     }
-    term_move_cursor(rows - 3, 0);
-    if (*message)
-        text(message, columns);
-    draw_entry_info(active, rows - 2, columns);
-    term_move_cursor(rows - 1, 0);
-    term_dim();
-    text(cd_mode ? "Arrows browse  Space child  Shift+Space/H parent  e edit  n/N new  r rename  d delete  c cd  q quit"
-                 : "Arrows browse  Space child  Shift+Space/H parent  e edit  n/N new  r rename  d delete  q quit", columns);
-    term_reset_style();
+    unsigned char *routes = calloc(cells, 1);
+    for (size_t index = 1; routes && index < count; ++index) {
+        Column *child = &branches[index];
+        Column *parent = &branches[child->parent];
+        long start = levels[parent->level].position + offset;
+        long end = levels[child->level].position + offset;
+        int parent_width = levels[parent->level].width;
+        if (!parent->directory->count)
+            continue;
+        int parent_row = center_row + parent->row_start + child->parent_entry;
+        int first_row = center_row + child->row_start;
+        int last_row = first_row + group_length(child) - 1;
+        int name_end = (int)start + 2 + text_width(
+            parent->directory->entries[child->parent_entry]->d_name, parent_width - 2) + 2;
+        int bar = (int)end - 1 - child->lane;
+        int join = parent_row > last_row ? first_row :
+                   parent_row < first_row ? last_row : parent_row;
+        for (int entry = 0; entry < group_length(child); ++entry)
+            route_visible(routes, columns, rows, first_row + entry, bar,
+                          first_row + entry, (int)end + 1);
+        route_visible(routes, columns, rows, parent_row, name_end, parent_row, bar);
+        route_visible(routes, columns, rows, parent_row, bar, join, bar);
+        route_visible(routes, columns, rows, first_row, bar, last_row, bar);
+    }
+    if (rails && routes)
+        for (size_t cell = 0; cell < cells; ++cell)
+            routes[cell] |= rails[cell];
+    if (routes) {
+        term_set_color("38;5;109");
+        draw_routes(routes, columns, rows);
+        term_reset_style();
+        if (frame)
+            for (size_t cell = 0; cell < cells; ++cell)
+                if (routes[cell])
+                    frame[cell] = 1;
+    }
+    if (root_label_visible) {
+        term_move_cursor(root_row, root_column - root_width - 2);
+        term_set_color("1;38;5;81");
+        clipped_text(root_name, 0, root_width);
+        mark_cells(frame, columns, rows, root_row, root_column - root_width - 2, root_width);
+        term_reset_style();
+        term_move_cursor(root_row, root_column - 1);
+        term_set_color("38;5;109");
+        fputs("─", stdout);
+        mark_cells(frame, columns, rows, root_row, root_column - 1, 1);
+        term_reset_style();
+    }
+    erase_old_cells(frame, columns, rows);
+    free(painted_cells);
+    painted_cells = frame;
+    painted_columns = columns;
+    painted_rows = rows;
+    free(rails);
+    free(routes);
+    free(levels);
+    free_columns(branches, count);
+    if (redraw_chrome) {
+        term_move_cursor(rows - 3, 0);
+        if (*message) {
+            term_clear_line();
+            text(message, columns);
+        } else
+            draw_entry_info(active, rows - 3, columns);
+        draw_status_bar(active, rows, columns, cd_mode);
+    }
     fflush(stdout);
+    return target_offset;
+}
+
+static long scroll_position(long origin, long target, struct timespec start, struct timespec now)
+{
+    long double elapsed = (long double)(now.tv_sec - start.tv_sec) +
+                          (long double)(now.tv_nsec - start.tv_nsec) / 1000000000;
+    long double distance = (long double)target - origin;
+    if (distance < 0)
+        distance = -distance;
+    if (elapsed * 250 >= distance)
+        return target;
+    long step = elapsed > 0 ? (long)(elapsed * 250) : 0;
+    return origin + (target > origin ? step : -step);
+}
+
+static void scroll_depth(const Directory *directories, size_t depth,
+                         const Directory *parent_preview, const char *message,
+                         bool cd_mode, long target)
+{
+    struct timespec start;
+    if (viewport_offset == target || clock_gettime(CLOCK_MONOTONIC, &start) < 0)
+        return;
+    long origin = viewport_offset;
+    while (!stopped && !resized && viewport_offset != target) {
+        fd_set input;
+        FD_ZERO(&input);
+        FD_SET(STDIN_FILENO, &input);
+        struct timeval timeout = {.tv_usec = 16000};
+        if (select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout) != 0)
+            break;
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+            break;
+        long next = scroll_position(origin, target, start, now);
+        if (next != viewport_offset) {
+            viewport_offset = next;
+            draw(directories, depth, parent_preview, message, cd_mode, true, false);
+        }
+    }
 }
 
 static bool redraw_focus(const Directory *directories, size_t depth, int previous)
@@ -867,23 +1508,6 @@ static int refresh_directory(Directory *directory, const char *focus)
     return 0;
 }
 
-static void refresh_preview(Directory *preview, const Directory *current)
-{
-    if (preview->path)
-        free_directory(preview);
-    *preview = (Directory){0};
-    if (!current->count)
-        return;
-    char *child = child_path(current->path, current->entries[current->selected]->d_name);
-    if (!child)
-        return;
-    struct stat info;
-    if (stat(child, &info) == 0 && S_ISDIR(info.st_mode) &&
-        load_directory(child, preview) == 0)
-        return;
-    free(child);
-}
-
 static int load_parent_directory(const Directory *current, Directory *parent)
 {
     char *path = strdup(current->path);
@@ -1014,8 +1638,11 @@ static void rename_entry(Directory *current, char *message, size_t capacity)
         snprintf(message, capacity, "Out of memory");
     else if (renameat2(AT_FDCWD, old_path, AT_FDCWD, new_path, RENAME_NOREPLACE) < 0)
         snprintf(message, capacity, "Cannot rename: %s", strerror(errno));
-    else if (refresh_directory(current, name) < 0)
-        snprintf(message, capacity, "Cannot refresh: %s", strerror(errno));
+    else {
+        rename_opened_paths(old_path, new_path);
+        if (refresh_directory(current, name) < 0)
+            snprintf(message, capacity, "Cannot refresh: %s", strerror(errno));
+    }
     free(old_path);
     free(new_path);
 }
@@ -1071,6 +1698,7 @@ static void leave_directory(Directory *directories, size_t *depth,
 {
     Directory *current = &directories[*depth - 1];
     if (*depth > 1) {
+        remember_selection(current);
         free_directory(current);
         --*depth;
     } else if (strcmp(current->path, "/") != 0) {
@@ -1078,6 +1706,7 @@ static void leave_directory(Directory *directories, size_t *depth,
         if (load_parent_directory(current, &parent) < 0) {
             snprintf(message, capacity, "Cannot open: %s", strerror(errno));
         } else {
+            remember_selection(current);
             free_directory(current);
             *current = parent;
             *dirty = true;
@@ -1191,22 +1820,31 @@ int main(int argc, char **argv)
 
     size_t depth = 1;
     size_t capacity = 1;
-    Directory preview = {0};
     Directory parent_preview = {0};
-    bool preview_enabled = false;
     bool parent_mode_set = false;
     bool parent_visible = false;
     char *chosen_directory = NULL;
     char message[256] = "";
     bool dirty = true;
+    bool animate_depth = false;
     while (!stopped) {
         if (dirty || resized) {
+            if (resized) {
+                free(painted_cells);
+                painted_cells = NULL;
+                help_rows = 0;
+            }
             bool show_ancestors = !parent_mode_set || parent_visible;
-            draw(show_ancestors ? directories : &directories[depth - 1],
-                 show_ancestors ? depth : 1, preview.path ? &preview : NULL,
-                 parent_preview.path ? &parent_preview : NULL, message, cd_mode);
+            const Directory *visible = show_ancestors ? directories : &directories[depth - 1];
+            size_t visible_depth = show_ancestors ? depth : 1;
+            const Directory *preview = parent_preview.path ? &parent_preview : NULL;
+            bool animate = animate_depth && !resized;
+            long target = draw(visible, visible_depth, preview, message, cd_mode, animate, true);
             dirty = false;
             resized = 0;
+            if (animate)
+                scroll_depth(visible, visible_depth, preview, message, cd_mode, target);
+            animate_depth = false;
         }
         int key = read_key();
         if (key == -1 || key == 'q' || key == 3)
@@ -1224,11 +1862,14 @@ int main(int argc, char **argv)
             --current->selected;
         else if ((key == KEY_DOWN || key == 'j') && current->selected + 1 < current->count)
             ++current->selected;
-        else if (key == ' ') {
-            preview_enabled = !preview_enabled;
-            if (!preview_enabled && preview.path) {
-                free_directory(&preview);
-                preview = (Directory){0};
+        else if (key == ' ' && current->count) {
+            char *child = child_path(current->path, current->entries[current->selected]->d_name);
+            if (child) {
+                struct stat info;
+                if (stat(child, &info) == 0 && S_ISDIR(info.st_mode))
+                    toggle_open(child);
+                else
+                    free(child);
             }
         }
         else if (key == KEY_SHIFT_SPACE || key == 'H') {
@@ -1255,22 +1896,38 @@ int main(int argc, char **argv)
             if (chosen_directory)
                 break;
         }
-        else if (key == KEY_LEFT || key == 'h')
+        else if (key == KEY_LEFT || key == 'h') {
+            char *previous_path = depth == 1 ? strdup(current->path) : NULL;
             leave_directory(directories, &depth, message, sizeof(message), &dirty);
+            if (previous_path && strcmp(previous_path, directories[0].path) != 0 &&
+                !is_open(previous_path))
+                toggle_open(previous_path);
+            else
+                free(previous_path);
+        }
         else if ((key == KEY_RIGHT || key == 'l') && current->count &&
                  !enter_directory(&directories, &depth, &capacity, message, sizeof(message))) {
             dirty = true;
             continue;
         }
+        if (depth > previous_depth) {
+            char *child = strdup(directories[depth - 1].path);
+            if (child && !is_open(child))
+                toggle_open(child);
+            else
+                free(child);
+        }
         bool selection_changed = (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') &&
                                  current->selected != previous;
         bool directory_changed = depth != previous_depth ||
                                  ((key == KEY_LEFT || key == 'h') && dirty);
+        if (directory_changed)
+            animate_depth = true;
         bool contents_may_change = key == 'n' || key == 'N' || key == 'r' || key == 'd' ||
                                    key == 'e' || key == '\r' || key == '\n';
-        if (preview_enabled && (selection_changed || directory_changed || key == ' ' ||
-                                contents_may_change)) {
-            refresh_preview(&preview, &directories[depth - 1]);
+        if (directory_changed || contents_may_change || key == ' ')
+            clear_directory_cache();
+        if (selection_changed || directory_changed || key == ' ' || contents_may_change) {
             dirty = true;
         }
         if (parent_mode_set && (key == KEY_SHIFT_SPACE || key == 'H' || directory_changed ||
@@ -1288,7 +1945,7 @@ int main(int argc, char **argv)
         if (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') {
             if (current->selected == previous && !had_message && !resized && !dirty)
                 continue;
-            if (current->selected != previous && !resized && !dirty &&
+            if (current->selected != previous && !resized && !dirty && !opened_count &&
                 redraw_focus(directories, depth, previous))
                 continue;
         }
@@ -1297,10 +1954,18 @@ int main(int argc, char **argv)
             continue;
         dirty = true;
     }
-    if (preview.path)
-        free_directory(&preview);
     if (parent_preview.path)
         free_directory(&parent_preview);
+    free(painted_cells);
+    for (size_t index = 0; index < focused_count; ++index) {
+        free(focused_entries[index].path);
+        free(focused_entries[index].entry);
+    }
+    free(focused_entries);
+    clear_directory_cache();
+    for (size_t index = 0; index < opened_count; ++index)
+        free(opened_paths[index]);
+    free(opened_paths);
     for (size_t index = 0; index < depth; ++index)
         free_directory(&directories[index]);
     free(directories);

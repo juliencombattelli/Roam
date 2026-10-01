@@ -1,8 +1,8 @@
 # roam
 
 A small Linux terminal file explorer written in C11. It opens the alternate
-screen, centers the active directory column, and keeps parent directories visible
-to its left when space allows. No external libraries are needed.
+screen and draws opened directories as a connected tree centered on the focused
+branch. Entries use `LS_COLORS` when set. No external libraries are needed.
 
 ![roam terminal file explorer](screenshot.png)
 
@@ -13,7 +13,8 @@ Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u N
 - Up/Down (or `k`/`j`): select an entry
 - Right (or `l`): open the selected directory
 - Left (or `h`): open the parent directory, including from the starting column
-- Space: toggle child previews without moving focus; previews follow selection and navigation
+- Space: open or close the selected directory's tree without moving focus;
+  opened directories stay visible in groups within their depth column until closed individually
 - Shift+Space (or `H`): show or hide the active directory's parent without moving focus
 - Enter (or `e`): open the selected file or directory with `$EDITOR`
 - `n` / `N`: create a file / directory in the current directory
