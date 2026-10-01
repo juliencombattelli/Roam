@@ -896,10 +896,10 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
         metadata_width = 0;
     int summary_column = bar_width - summary_width - (metadata_width ? metadata_width + 2 : 0);
     int left_limit = summary_column - (summary_width ? 2 : 1);
-    term_move_cursor(rows - 1, 0);
+    term_move_cursor(rows - 2, 0);
     term_set_color("48;5;234;38;5;252");
     putchar(' ');
-    term_move_cursor(rows - 1, 1);
+    term_move_cursor(rows - 2, 1);
     char *path = strdup(focused ? focused : active->path);
     const char *segments[2] = {NULL};
     int count = 0;
@@ -945,22 +945,22 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
     }
     free(path);
     term_set_color("48;5;234;38;5;252");
-    term_move_cursor(rows - 1, used);
+    term_move_cursor(rows - 2, used);
     if (used < summary_column)
         printf("%*s", summary_column - used, "");
     term_set_color("48;5;234;38;5;180");
-    term_move_cursor(rows - 1, summary_column);
+    term_move_cursor(rows - 2, summary_column);
     text(summary, summary_width);
     if (metadata_width) {
         term_set_color("48;5;234;38;5;252");
         fputs("  ", stdout);
         if (active->count)
-            draw_entry_info(has_info ? &info : NULL, rows - 1,
+            draw_entry_info(has_info ? &info : NULL, rows - 2,
                             summary_column + summary_width + 2, metadata_width);
         else
             printf("%*s", metadata_width, "");
     }
-    term_move_cursor(rows - 1, bar_width);
+    term_move_cursor(rows - 2, bar_width);
     term_set_color("48;5;234;38;5;152");
     fputs("  ? keys ", stdout);
     term_reset_style();
@@ -1259,13 +1259,13 @@ static long draw(const Directory *directories, size_t depth,
     free(levels);
     free_columns(branches, count);
     if (redraw_chrome) {
-        term_move_cursor(rows - 2, 0);
+        draw_status_bar(active, rows, columns);
+        term_move_cursor(rows - 1, 0);
         if (*message) {
             term_clear_line();
             text(message, columns);
         } else
             term_clear_line();
-        draw_status_bar(active, rows, columns);
     }
     fflush(stdout);
     return target_offset;
@@ -1360,7 +1360,7 @@ static bool redraw_focus(const Directory *directories, size_t depth, int previou
                       focus_row(active, available, active->selected), false);
     }
     draw_status_bar(active, size.ws_row, columns);
-    term_move_cursor(size.ws_row - 2, 0);
+    term_move_cursor(size.ws_row - 1, 0);
     term_clear_line();
     fflush(stdout);
     return true;
@@ -1575,7 +1575,7 @@ static bool prompt_name_input(const char *label, const char *initial, char *name
     bool dirty = true;
     while (!stopped) {
         if (dirty) {
-            term_move_cursor(size.ws_row - 2, 0);
+            term_move_cursor(size.ws_row - 1, 0);
             term_clear_line();
             const char *visible_label = strlen(label) >= size.ws_col ? "Name: " : label;
             int remaining = size.ws_col - (int)strlen(visible_label);
@@ -1623,7 +1623,7 @@ static bool confirm_remove_input(const char *name)
     struct winsize size;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 7)
         return false;
-    term_move_cursor(size.ws_row - 2, 0);
+    term_move_cursor(size.ws_row - 1, 0);
     term_clear_line();
     if (size.ws_col < 16) {
         text("Remove? y/N", size.ws_col);
