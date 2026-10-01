@@ -9,3 +9,4 @@
 - Add git integration
 - Load the settings from a XDG_CONFIG_DIR ini or toml style file
 - Add a settings menu with , and allow to dynamically change them
+- Add a way to identify the target of a link easily
