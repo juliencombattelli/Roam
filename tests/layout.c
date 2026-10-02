@@ -4,8 +4,29 @@
 
 #include <assert.h>
 
+#define TEST_RGB_COMPONENT 17
+
 int main(void)
 {
+    assert(strcmp(COLOR_STATUS_CURRENT, "48;5;234;38;5;231;1") == 0);
+    assert(strcmp(COLOR_PERMISSION_DIRECTORY, "0;48;5;234;1;34") == 0);
+    const char *rgb_parameters = ANSI_BG_RGB(TEST_RGB_COMPONENT, 20, 255) ";"
+                                 ANSI_FG_RGB(10, 128, 200);
+    assert(strcmp(rgb_parameters, "48;2;17;20;255;38;2;10;128;200") == 0);
+    FILE *color_output = tmpfile();
+    assert(color_output);
+    int original_output = dup(STDOUT_FILENO);
+    assert(original_output >= 0 && dup2(fileno(color_output), STDOUT_FILENO) >= 0);
+    term_set_color(rgb_parameters);
+    assert(fflush(stdout) == 0);
+    assert(fseek(color_output, 0, SEEK_SET) == 0);
+    char sequence[64];
+    size_t sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
+    sequence[sequence_length] = '\0';
+    assert(strcmp(sequence, "\033[48;2;17;20;255;38;2;10;128;200m") == 0);
+    assert(dup2(original_output, STDOUT_FILENO) >= 0);
+    close(original_output);
+    fclose(color_output);
     int input[2];
     assert(pipe(input) == 0);
     int original_input = dup(STDIN_FILENO);

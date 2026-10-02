@@ -25,6 +25,80 @@
 #include <wchar.h>
 #include <wordexp.h>
 
+#define ANSI_STRINGIFY_INNER(value) #value
+#define ANSI_STRINGIFY(value) ANSI_STRINGIFY_INNER(value)
+#define ANSI_SGR(parameters) "\033[" parameters "m"
+#define ANSI_BG_256(value) "48;5;" ANSI_STRINGIFY(value)
+#define ANSI_FG_256(value) "38;5;" ANSI_STRINGIFY(value)
+#define ANSI_BG_RGB(red, green, blue) \
+    "48;2;" ANSI_STRINGIFY(red) ";" ANSI_STRINGIFY(green) ";" ANSI_STRINGIFY(blue)
+#define ANSI_FG_RGB(red, green, blue) \
+    "38;2;" ANSI_STRINGIFY(red) ";" ANSI_STRINGIFY(green) ";" ANSI_STRINGIFY(blue)
+#define ANSI_PERMISSION(style) "0;" ANSI_BG_256(234) ";" style
+
+enum {
+    MIN_TERMINAL_COLUMNS = 12,
+    MIN_TERMINAL_ROWS = 7,
+    NEW_DIRECTORY_MODE = 0777,
+    NEW_FILE_MODE = 0666,
+    REMOVE_CONFIRM_MIN_COLUMNS = 16,
+    STATUS_BAR_RESERVED_COLUMNS = 9,
+    STATUS_SUMMARY_MIN_COLUMNS = 32,
+    STATUS_METADATA_WIDE_COLUMNS = 100,
+    STATUS_METADATA_MEDIUM_COLUMNS = 72,
+    STATUS_METADATA_NARROW_COLUMNS = 48,
+    STATUS_METADATA_WIDE_WIDTH = 52,
+    STATUS_METADATA_MEDIUM_WIDTH = 30,
+    STATUS_METADATA_NARROW_WIDTH = 16,
+    STATUS_METADATA_EMPTY_MAX_WIDTH = 20,
+    STATUS_METADATA_MIN_WIDTH = 11,
+    TREE_ENTRY_INDENT = 2,
+    TREE_ENTRY_SUFFIX_WIDTH = 2,
+    TREE_LEVEL_GUTTER = 3,
+    TREE_BRANCH_GAP = 1,
+    SCROLL_SPEED = 250, // cells per second
+    SCROLL_FRAME_USEC = 16000,
+    KEY_IDLE_TIMEOUT_USEC = 200000,
+    KEY_SEQUENCE_TIMEOUT_USEC = 50000
+};
+
+static const char *const COLOR_METADATA = "0;" ANSI_BG_256(234) ";39";
+static const char *const COLOR_METADATA_MUTED = "0;" ANSI_BG_256(234) ";" ANSI_FG_256(244);
+static const char *const COLOR_STATUS_TEXT = ANSI_BG_256(234) ";" ANSI_FG_256(252);
+static const char *const COLOR_STATUS_ACCENT = ANSI_BG_256(234) ";" ANSI_FG_256(110);
+static const char *const COLOR_STATUS_CURRENT = ANSI_BG_256(234) ";" ANSI_FG_256(231) ";1";
+static const char *const COLOR_STATUS_PARENT = ANSI_BG_256(234) ";" ANSI_FG_256(80);
+static const char *const COLOR_STATUS_SUMMARY = ANSI_BG_256(234) ";" ANSI_FG_256(180);
+static const char *const COLOR_STATUS_HELP = ANSI_BG_256(234) ";" ANSI_FG_256(152);
+static const char *const COLOR_TREE = ANSI_FG_256(109);
+static const char *const COLOR_PERMISSION_DIRECTORY = ANSI_PERMISSION("1;34");
+static const char *const COLOR_PERMISSION_LINK = ANSI_PERMISSION("1;36");
+static const char *const COLOR_PERMISSION_OTHER = ANSI_PERMISSION("1;37");
+static const char *const COLOR_PERMISSION_MISSING = ANSI_PERMISSION("2");
+static const char *const COLOR_PERMISSION_READ = ANSI_PERMISSION("32");
+static const char *const COLOR_PERMISSION_WRITE = ANSI_PERMISSION("33");
+static const char *const COLOR_PERMISSION_EXECUTE = ANSI_PERMISSION("31");
+static const char *const COLOR_PERMISSION_SPECIAL = ANSI_PERMISSION("1;35");
+static const char *const EMPTY_DIRECTORY_LABEL = "(empty)";
+static const char *const SIZE_UNITS[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
+static const char *const TREE_GLYPHS[] = {
+    "", "│", "─", "╰", "│", "│", "╭", "├",
+    "─", "╯", "─", "┴", "╮", "┤", "┬", "┼"
+};
+static const char *const KEY_HELP_TEXT[] = {
+    "↑↓←→            browse",
+    "space           toggle directory folding",
+    "H / shift-space hide parents",
+    "A               reveal all parents",
+    "e / Enter       edit",
+    "n               new file",
+    "N               new directory",
+    "r               rename",
+    "d               delete",
+    "c               cd",
+    "Esc / q         quit"
+};
+
 typedef struct {
     char *path;
     struct dirent **entries;
@@ -203,9 +277,9 @@ static void term_clear_line(void)
     fputs("\033[2K", stdout);
 }
 
-static void term_set_color(const char *color)
+static void term_set_color(const char *parameters)
 {
-    printf("\033[%sm", color);
+    printf(ANSI_SGR("%s"), parameters);
 }
 
 static void term_reverse_video(void)
@@ -477,9 +551,11 @@ static int text_width(const char *source, int limit)
 
 static int content_width(const Directory *directory, int limit)
 {
-    int width = directory->count ? 2 : 9;
+    int width = directory->count ? TREE_ENTRY_INDENT + TREE_ENTRY_SUFFIX_WIDTH :
+                TREE_ENTRY_INDENT + text_width(EMPTY_DIRECTORY_LABEL, limit);
     for (int entry = 0; entry < directory->count; ++entry) {
-        int entry_width = 4 + text_width(directory->entries[entry]->d_name, limit - 4);
+        int entry_width = TREE_ENTRY_INDENT + text_width(
+            directory->entries[entry]->d_name, limit - TREE_ENTRY_INDENT) + TREE_ENTRY_SUFFIX_WIDTH;
         if (entry_width > width)
             width = entry_width;
     }
@@ -624,15 +700,11 @@ static void route_visible(unsigned char *routes, int columns, int rows,
 
 static void draw_routes(const unsigned char *routes, int columns, int rows)
 {
-    static const char *const glyph[] = {
-        "", "│", "─", "╰", "│", "│", "╭", "├",
-        "─", "╯", "─", "┴", "╮", "┤", "┬", "┼"
-    };
     for (int row = 1; row < rows - 2; ++row)
         for (int column = 0; column < columns; ++column)
             if (routes[row * columns + column]) {
                 term_move_cursor(row, column);
-                fputs(glyph[routes[row * columns + column]], stdout);
+                fputs(TREE_GLYPHS[routes[row * columns + column]], stdout);
             }
 }
 
@@ -673,13 +745,12 @@ static void format_size(off_t size, char *output, size_t capacity)
         snprintf(output, capacity, "%jd B", (intmax_t)size);
     } else {
         double amount = (double)size;
-        const char *units[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
         int unit = 0;
         while (amount >= 1024 && unit < 6) {
             amount /= 1024;
             ++unit;
         }
-        snprintf(output, capacity, "%.1f %s", amount, units[unit]);
+        snprintf(output, capacity, "%.1f %s", amount, SIZE_UNITS[unit]);
     }
 }
 
@@ -708,7 +779,7 @@ static void format_entry_details(const struct stat *info, char *owner_group,
 static void draw_entry_info(const struct stat *info, int row, int column, int columns)
 {
     term_move_cursor(row, column);
-    term_set_color("0;48;5;234;39");
+    term_set_color(COLOR_METADATA);
     if (!info) {
         text("Metadata unavailable", columns);
         int printed = text_width("Metadata unavailable", columns);
@@ -734,22 +805,27 @@ static void draw_entry_info(const struct stat *info, int row, int column, int co
         mode[9] = mode[9] == 'x' ? 't' : 'T';
 
     for (int index = 0; index < 10 && index < columns; ++index) {
-        printf("\033[0;48;5;234;%sm", index == 0 ? (mode[0] == 'd' ? "1;34" : mode[0] == 'l' ? "1;36" : "1;37") :
-               mode[index] == '-' ? "2" : mode[index] == 'r' ? "32" :
-               mode[index] == 'w' ? "33" : mode[index] == 'x' ? "31" : "1;35");
+        const char *color = index == 0 ?
+            (mode[0] == 'd' ? COLOR_PERMISSION_DIRECTORY : mode[0] == 'l' ?
+             COLOR_PERMISSION_LINK : COLOR_PERMISSION_OTHER) :
+            mode[index] == '-' ? COLOR_PERMISSION_MISSING :
+            mode[index] == 'r' ? COLOR_PERMISSION_READ :
+            mode[index] == 'w' ? COLOR_PERMISSION_WRITE :
+            mode[index] == 'x' ? COLOR_PERMISSION_EXECUTE : COLOR_PERMISSION_SPECIAL;
+        term_set_color(color);
         putchar(mode[index]);
     }
-    term_set_color("0;48;5;234;39");
+    term_set_color(COLOR_METADATA);
 
     char owner_group[640], details[64];
     format_entry_details(info, owner_group, sizeof(owner_group), details, sizeof(details));
     if (columns > 10) {
         int remaining = columns - 10;
-        term_set_color("0;48;5;234;38;5;244");
+        term_set_color(COLOR_METADATA_MUTED);
         text(owner_group, remaining);
         int printed = text_width(owner_group, remaining);
         remaining -= printed;
-        term_set_color("0;48;5;234;39");
+        term_set_color(COLOR_METADATA);
         text(details, remaining);
         printed = text_width(details, remaining);
         if (printed < remaining)
@@ -759,7 +835,7 @@ static void draw_entry_info(const struct stat *info, int row, int column, int co
 
 static void draw_status_bar(const Directory *active, int rows, int columns)
 {
-    int bar_width = columns - 9;
+    int bar_width = columns - STATUS_BAR_RESERVED_COLUMNS;
     char summary[64];
     char *focused = active->count
         ? child_path(active->path, active->entries[active->selected]->d_name) : NULL;
@@ -787,9 +863,10 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
         snprintf(summary, sizeof(summary), "%d %s", active->count,
                  active->count == 1 ? "item" : "items");
     }
-    int summary_width = columns < 32 ? 0 : text_width(summary, bar_width - 2);
-    int metadata_width = columns >= 100 ? 52 : columns >= 72 ? 30 :
-                         columns >= 48 ? 16 : 0;
+    int summary_width = columns < STATUS_SUMMARY_MIN_COLUMNS ? 0 : text_width(summary, bar_width - 2);
+    int metadata_width = columns >= STATUS_METADATA_WIDE_COLUMNS ? STATUS_METADATA_WIDE_WIDTH :
+                         columns >= STATUS_METADATA_MEDIUM_COLUMNS ? STATUS_METADATA_MEDIUM_WIDTH :
+                         columns >= STATUS_METADATA_NARROW_COLUMNS ? STATUS_METADATA_NARROW_WIDTH : 0;
     if (has_info) {
         char owner_group[640], details[64];
         format_entry_details(&info, owner_group, sizeof(owner_group), details, sizeof(details));
@@ -799,17 +876,17 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
             metadata_width = content_width;
     } else if (!active->count) {
         metadata_width = 0;
-    } else if (metadata_width > 20) {
-        metadata_width = 20;
+    } else if (metadata_width > STATUS_METADATA_EMPTY_MAX_WIDTH) {
+        metadata_width = STATUS_METADATA_EMPTY_MAX_WIDTH;
     }
     if (metadata_width > bar_width - summary_width - 5)
         metadata_width = bar_width - summary_width - 5;
-    if (metadata_width < 11)
+    if (metadata_width < STATUS_METADATA_MIN_WIDTH)
         metadata_width = 0;
     int summary_column = bar_width - summary_width - (metadata_width ? metadata_width + 2 : 0);
     int left_limit = summary_column - (summary_width ? 2 : 1);
     term_move_cursor(rows - 2, 0);
-    term_set_color("48;5;234;38;5;252");
+    term_set_color(COLOR_STATUS_TEXT);
     putchar(' ');
     term_move_cursor(rows - 2, 1);
     char *path = strdup(focused ? focused : active->path);
@@ -846,25 +923,25 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
         if (index != first) {
             if (left_limit - used - 1 < 4)
                 break;
-            term_set_color("48;5;234;38;5;110");
+            term_set_color(COLOR_STATUS_ACCENT);
             text(" › ", left_limit - used - 1);
             used += 3;
         }
-        term_set_color(index == count - 1 ? "48;5;234;38;5;231;1" : "48;5;234;38;5;80");
+        term_set_color(index == count - 1 ? COLOR_STATUS_CURRENT : COLOR_STATUS_PARENT);
         int width = left_limit - used - 1;
         clipped_text(segments[index], 0, width);
         used += text_width(segments[index], width);
     }
     free(path);
-    term_set_color("48;5;234;38;5;252");
+    term_set_color(COLOR_STATUS_TEXT);
     term_move_cursor(rows - 2, used);
     if (used < summary_column)
         printf("%*s", summary_column - used, "");
-    term_set_color("48;5;234;38;5;180");
+    term_set_color(COLOR_STATUS_SUMMARY);
     term_move_cursor(rows - 2, summary_column);
     text(summary, summary_width);
     if (metadata_width) {
-        term_set_color("48;5;234;38;5;252");
+        term_set_color(COLOR_STATUS_TEXT);
         fputs("  ", stdout);
         if (active->count)
             draw_entry_info(has_info ? &info : NULL, rows - 2,
@@ -873,7 +950,7 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
             printf("%*s", metadata_width, "");
     }
     term_move_cursor(rows - 2, bar_width);
-    term_set_color("48;5;234;38;5;152");
+    term_set_color(COLOR_STATUS_HELP);
     fputs("  ? keys ", stdout);
     term_reset_style();
     free(focused);
@@ -887,7 +964,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
         return viewport_offset;
     int columns = size.ws_col;
     int rows = size.ws_row;
-    if (columns < 12 || rows < 7) {
+    if (columns < MIN_TERMINAL_COLUMNS || rows < MIN_TERMINAL_ROWS) {
         free(painted_cells);
         painted_cells = NULL;
         term_clear_screen();
@@ -976,7 +1053,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
             for (size_t slot = pin; slot > 0; --slot) {
                 size_t index = group[slot - 1];
                 int ideal = ideal_start(branches, index);
-                int limit = next_start - group_length(&branches[index]) - 1;
+                int limit = next_start - group_length(&branches[index]) - TREE_BRANCH_GAP - 1;
                 branches[index].row_start = ideal < limit ? ideal : limit;
                 next_start = branches[index].row_start;
             }
@@ -986,7 +1063,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
         for (size_t slot = below; slot < groups; ++slot) {
             size_t index = group[slot];
             int ideal = level ? ideal_start(branches, index) : 0;
-            int limit = previous_end + 2;
+            int limit = previous_end + TREE_BRANCH_GAP + 1;
             branches[index].row_start = ideal > limit ? ideal : limit;
             previous_end = branches[index].row_start + group_length(&branches[index]) - 1;
         }
@@ -1012,7 +1089,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
     }
     for (int level = 1; level <= last_level; ++level)
         levels[level].position = levels[level - 1].position + levels[level - 1].width +
-                                 levels[level].groups + 3;
+                                 levels[level].groups + TREE_LEVEL_GUTTER;
     long target_offset = (columns - levels[branches[active_index].level].width) / 2 -
                          levels[branches[active_index].level].position;
     if (!preserve_offset || !viewport_initialized) {
@@ -1071,16 +1148,16 @@ static long draw(const Directory *directories, size_t depth, const char *message
         int visible_width = column < 0 ? column + width : width;
         if (visible_width > columns - left)
             visible_width = columns - left;
-        int name_column = column + 2;
+        int name_column = column + TREE_ENTRY_INDENT;
         int name_left = name_column < 0 ? 0 : name_column;
         int name_skip = name_column < 0 ? -name_column : 0;
-        int name_width = visible_width - 2;
+        int name_width = visible_width - TREE_ENTRY_INDENT;
         int entry_top_row = center_row + branch->row_start;
         if (!directory->count) {
             if (entry_top_row >= 2 && entry_top_row < rows - 2 && name_width > 0) {
                 term_move_cursor(entry_top_row, name_left);
-                clipped_text("(empty)", name_skip, name_width);
-                int label_width = text_width("(empty)", name_skip + name_width) - name_skip;
+                clipped_text(EMPTY_DIRECTORY_LABEL, name_skip, name_width);
+                int label_width = text_width(EMPTY_DIRECTORY_LABEL, name_skip + name_width) - name_skip;
                 mark_cells(frame, columns, rows, entry_top_row, name_left, label_width);
             }
         }
@@ -1124,8 +1201,9 @@ static long draw(const Directory *directories, size_t depth, const char *message
         int parent_row = center_row + parent->row_start + child->parent_entry;
         int first_row = center_row + child->row_start;
         int last_row = first_row + group_length(child) - 1;
-        int name_end = (int)start + 2 + text_width(
-            parent->directory->entries[child->parent_entry]->d_name, parent_width - 2) + 2;
+        int name_end = (int)start + TREE_ENTRY_INDENT + text_width(
+            parent->directory->entries[child->parent_entry]->d_name,
+            parent_width - TREE_ENTRY_INDENT) + TREE_ENTRY_SUFFIX_WIDTH;
         int bar = (int)end - 1 - child->lane;
         int join = parent_row > last_row ? first_row :
                    parent_row < first_row ? last_row : parent_row;
@@ -1140,7 +1218,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
         for (size_t cell = 0; cell < cells; ++cell)
             routes[cell] |= rails[cell];
     if (routes) {
-        term_set_color("38;5;109");
+        term_set_color(COLOR_TREE);
         draw_routes(routes, columns, rows);
         term_reset_style();
         if (frame)
@@ -1157,7 +1235,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
         mark_cells(frame, columns, rows, root_row, root_column - root_width - 2, root_width);
         term_reset_style();
         term_move_cursor(root_row, root_column - 1);
-        term_set_color("38;5;109");
+        term_set_color(COLOR_TREE);
         fputs("─", stdout);
         mark_cells(frame, columns, rows, root_row, root_column - 1, 1);
         term_reset_style();
@@ -1191,9 +1269,9 @@ static long scroll_position(long origin, long target, struct timespec start, str
     long double distance = (long double)target - origin;
     if (distance < 0)
         distance = -distance;
-    if (elapsed * 250 >= distance)
+    if (elapsed * SCROLL_SPEED >= distance)
         return target;
-    long step = elapsed > 0 ? (long)(elapsed * 250) : 0;
+    long step = elapsed > 0 ? (long)(elapsed * SCROLL_SPEED) : 0;
     return origin + (target > origin ? step : -step);
 }
 
@@ -1208,7 +1286,7 @@ static void scroll_depth(const Directory *directories, size_t depth,
         fd_set input;
         FD_ZERO(&input);
         FD_SET(STDIN_FILENO, &input);
-        struct timeval timeout = {.tv_usec = 16000};
+        struct timeval timeout = {.tv_usec = SCROLL_FRAME_USEC};
         if (select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout) != 0)
             break;
         struct timespec now;
@@ -1235,7 +1313,7 @@ static int read_key(void)
     fd_set input;
     FD_ZERO(&input);
     FD_SET(STDIN_FILENO, &input);
-    struct timeval timeout = {.tv_usec = 200000};
+    struct timeval timeout = {.tv_usec = KEY_IDLE_TIMEOUT_USEC};
     int ready = select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout);
     if (ready <= 0)
         return 0;
@@ -1245,7 +1323,7 @@ static int read_key(void)
     if (key != 27)
         return key;
 
-    timeout.tv_usec = 50000;
+    timeout.tv_usec = KEY_SEQUENCE_TIMEOUT_USEC;
     FD_ZERO(&input);
     FD_SET(STDIN_FILENO, &input);
     if (select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout) <= 0)
@@ -1257,7 +1335,7 @@ static int read_key(void)
         pending_key = prefix;
         return 27;
     }
-    timeout.tv_usec = 50000;
+    timeout.tv_usec = KEY_SEQUENCE_TIMEOUT_USEC;
     FD_ZERO(&input);
     FD_SET(STDIN_FILENO, &input);
     if (select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout) <= 0)
@@ -1269,7 +1347,7 @@ static int read_key(void)
         size_t length = 0;
         sequence[length++] = (char)key;
         while (length < sizeof(sequence) - 1) {
-            timeout.tv_usec = 50000;
+            timeout.tv_usec = KEY_SEQUENCE_TIMEOUT_USEC;
             FD_ZERO(&input);
             FD_SET(STDIN_FILENO, &input);
             if (select(STDIN_FILENO + 1, &input, NULL, NULL, &timeout) <= 0 ||
@@ -1346,19 +1424,6 @@ static int key_box_width(const char *const controls[], int count, bool cd_mode, 
 
 static void show_keys(bool cd_mode)
 {
-    static const char *const controls[] = {
-        "↑↓←→            browse",
-        "space           toggle directory folding",
-        "H / shift-space hide parents",
-        "A               reveal all parents",
-        "e / Enter       edit",
-        "n               new file",
-        "N               new directory",
-        "r               rename",
-        "d               delete",
-        "c               cd",
-        "Esc / q         quit"
-    };
     int count = cd_mode ? 11 : 10;
     int first = 0;
     bool repaint = true;
@@ -1366,18 +1431,18 @@ static void show_keys(bool cd_mode)
         if (repaint || resized) {
             struct winsize size;
             if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 ||
-                size.ws_col < 12 || size.ws_row < 7)
+                size.ws_col < MIN_TERMINAL_COLUMNS || size.ws_row < MIN_TERMINAL_ROWS)
                 break;
             if (resized)
                 term_clear_screen();
-            int width = key_box_width(controls, count, cd_mode, size.ws_col);
+            int width = key_box_width(KEY_HELP_TEXT, count, cd_mode, size.ws_col);
             int height = size.ws_row - 2 < count + 4 ? size.ws_row - 2 : count + 4;
             int top = (size.ws_row - height) / 2;
             int left = (size.ws_col - width) / 2;
             int visible = height - 4;
             if (first > count - visible)
                 first = count - visible;
-            term_set_color("48;5;234;38;5;110");
+            term_set_color(COLOR_STATUS_ACCENT);
             term_move_cursor(top, left);
             fputs("╭", stdout);
             for (int column = 0; column < width - 2; ++column)
@@ -1386,9 +1451,9 @@ static void show_keys(bool cd_mode)
             for (int row = 1; row < height - 1; ++row) {
                 term_move_cursor(top + row, left);
                 fputs("│", stdout);
-                term_set_color("48;5;234;38;5;252");
+                term_set_color(COLOR_STATUS_TEXT);
                 printf("%*s", width - 2, "");
-                term_set_color("48;5;234;38;5;110");
+                term_set_color(COLOR_STATUS_ACCENT);
                 fputs("│", stdout);
             }
             term_move_cursor(top + height - 1, left);
@@ -1396,18 +1461,18 @@ static void show_keys(bool cd_mode)
             for (int column = 0; column < width - 2; ++column)
                 fputs("─", stdout);
             fputs("╯", stdout);
-            term_set_color("48;5;234;38;5;231;1");
+            term_set_color(COLOR_STATUS_CURRENT);
             term_move_cursor(top + 1, left + 2);
             text("Keys", width - 4);
-            term_set_color("48;5;234;38;5;252");
+            term_set_color(COLOR_STATUS_TEXT);
             for (int index = 0; index < visible; ++index) {
                 int control = first + index;
                 if (!cd_mode && control >= 9)
                     ++control;
                 term_move_cursor(top + 2 + index, left + 2);
-                text(controls[control], width - 4);
+                text(KEY_HELP_TEXT[control], width - 4);
             }
-            term_set_color("48;5;234;38;5;110");
+            term_set_color(COLOR_STATUS_ACCENT);
             term_move_cursor(top + height - 2, left + 2);
             text("Esc / q close", width - 4);
             term_reset_style();
@@ -1435,7 +1500,7 @@ static void show_keys(bool cd_mode)
 static bool prompt_name_input(const char *label, const char *initial, char *name, size_t capacity)
 {
     struct winsize size;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 7)
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < MIN_TERMINAL_ROWS)
         return false;
     size_t length = strlen(initial);
     if (length >= capacity)
@@ -1490,11 +1555,11 @@ static bool prompt_name(const char *label, const char *initial, char *name, size
 static bool confirm_remove_input(const char *name)
 {
     struct winsize size;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < 7)
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0 || size.ws_row < MIN_TERMINAL_ROWS)
         return false;
     term_move_cursor(size.ws_row - 1, 0);
     term_clear_line();
-    if (size.ws_col < 16) {
+    if (size.ws_col < REMOVE_CONFIRM_MIN_COLUMNS) {
         text("Remove? y/N", size.ws_col);
     } else {
         text("Remove ", 7);
@@ -1670,9 +1735,9 @@ static void create_entry(Directory *current, EntryType type, char *message, size
     }
     int result;
     if (type == ENTRY_DIRECTORY) {
-        result = mkdir(path, 0777);
+        result = mkdir(path, NEW_DIRECTORY_MODE);
     } else {
-        int file = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+        int file = open(path, O_WRONLY | O_CREAT | O_EXCL, NEW_FILE_MODE);
         result = file < 0 ? -1 : close(file);
     }
     if (result < 0)
