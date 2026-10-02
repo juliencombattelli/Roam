@@ -14,6 +14,7 @@ int main(void)
     assert(strcmp(ANSI_STRIKETHROUGH, "9") == 0);
     assert(strcmp(ANSI_BOLD ";" ANSI_ITALIC ";" ANSI_UNDERLINE, "1;3;4") == 0);
     assert(strcmp(COLOR_STATUS_CURRENT, "48;5;234;38;5;231;1") == 0);
+    assert(sizeof(COLOR_STATUS_CURRENT) == sizeof("48;5;234;38;5;231;1"));
     assert(strcmp(COLOR_PERMISSION_DIRECTORY, "48;5;234;38;5;34;1") == 0);
     const char *rgb_parameters = ANSI_BG_RGB(TEST_RGB_COMPONENT, 20, 255) ";"
                                  ANSI_FG_RGB(10, 128, 200);

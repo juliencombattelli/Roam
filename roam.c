@@ -69,24 +69,25 @@ enum {
     KEY_SEQUENCE_TIMEOUT_USEC = 50000
 };
 
-static const char *const COLOR_METADATA = ANSI_BG_256(234);
-static const char *const COLOR_METADATA_MUTED = ANSI_BG_256(234) ";" ANSI_FG_256(244);
-static const char *const COLOR_STATUS_TEXT = ANSI_BG_256(234) ";" ANSI_FG_256(252);
-static const char *const COLOR_STATUS_ACCENT = ANSI_BG_256(234) ";" ANSI_FG_256(110);
-static const char *const COLOR_STATUS_CURRENT = ANSI_BG_256(234) ";" ANSI_FG_256(231) ";" ANSI_BOLD;
-static const char *const COLOR_STATUS_PARENT = ANSI_BG_256(234) ";" ANSI_FG_256(80);
-static const char *const COLOR_STATUS_SUMMARY = ANSI_BG_256(234) ";" ANSI_FG_256(180);
-static const char *const COLOR_STATUS_HELP = ANSI_BG_256(234) ";" ANSI_FG_256(152);
-static const char *const COLOR_TREE = ANSI_FG_256(109);
-static const char *const COLOR_PERMISSION_DIRECTORY = ANSI_BG_256(234) ";" ANSI_FG_256(34) ";" ANSI_BOLD;
-static const char *const COLOR_PERMISSION_LINK = ANSI_BG_256(234) ";" ANSI_FG_256(36) ";" ANSI_BOLD;
-static const char *const COLOR_PERMISSION_OTHER = ANSI_BG_256(234) ";" ANSI_FG_256(37) ";" ANSI_BOLD;
-static const char *const COLOR_PERMISSION_MISSING = ANSI_BG_256(234) ";" ANSI_DIM;
-static const char *const COLOR_PERMISSION_READ = ANSI_BG_256(234) ";" ANSI_FG_256(32);
-static const char *const COLOR_PERMISSION_WRITE = ANSI_BG_256(234) ";" ANSI_FG_256(33);
-static const char *const COLOR_PERMISSION_EXECUTE = ANSI_BG_256(234) ";" ANSI_FG_256(31);
-static const char *const COLOR_PERMISSION_SPECIAL = ANSI_BG_256(234) ";" ANSI_FG_256(35) ";" ANSI_BOLD;
-static const char *const EMPTY_DIRECTORY_LABEL = "(empty)";
+static const char COLOR_METADATA[]             = ANSI_BG_256(234);
+static const char COLOR_METADATA_MUTED[]       = ANSI_BG_256(234) ";" ANSI_FG_256(244);
+static const char COLOR_STATUS_TEXT[]          = ANSI_BG_256(234) ";" ANSI_FG_256(252);
+static const char COLOR_STATUS_ACCENT[]        = ANSI_BG_256(234) ";" ANSI_FG_256(110);
+static const char COLOR_STATUS_CURRENT[]       = ANSI_BG_256(234) ";" ANSI_FG_256(231) ";" ANSI_BOLD;
+static const char COLOR_STATUS_PARENT[]        = ANSI_BG_256(234) ";" ANSI_FG_256(80);
+static const char COLOR_STATUS_SUMMARY[]       = ANSI_BG_256(234) ";" ANSI_FG_256(180);
+static const char COLOR_STATUS_HELP[]          = ANSI_BG_256(234) ";" ANSI_FG_256(152);
+static const char COLOR_TREE[]                 = ANSI_FG_256(109);
+static const char COLOR_PERMISSION_DIRECTORY[] = ANSI_BG_256(234) ";" ANSI_FG_256(34) ";" ANSI_BOLD;
+static const char COLOR_PERMISSION_LINK[]      = ANSI_BG_256(234) ";" ANSI_FG_256(36) ";" ANSI_BOLD;
+static const char COLOR_PERMISSION_OTHER[]     = ANSI_BG_256(234) ";" ANSI_FG_256(37) ";" ANSI_BOLD;
+static const char COLOR_PERMISSION_MISSING[]   = ANSI_BG_256(234) ";" ANSI_DIM;
+static const char COLOR_PERMISSION_READ[]      = ANSI_BG_256(234) ";" ANSI_FG_256(32);
+static const char COLOR_PERMISSION_WRITE[]     = ANSI_BG_256(234) ";" ANSI_FG_256(33);
+static const char COLOR_PERMISSION_EXECUTE[]   = ANSI_BG_256(234) ";" ANSI_FG_256(31);
+static const char COLOR_PERMISSION_SPECIAL[]   = ANSI_BG_256(234) ";" ANSI_FG_256(35) ";" ANSI_BOLD;
+
+static const char EMPTY_DIRECTORY_LABEL[] = "(empty)";
 static const char *const SIZE_UNITS[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
 static const char *const TREE_GLYPHS[] = {
     "", "│", "─", "╰", "│", "│", "╭", "├",
