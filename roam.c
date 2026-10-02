@@ -1332,6 +1332,18 @@ static int read_key(void)
     return key >= 'A' && key <= 'D' ? KEY_UP + key - 'A' : 0;
 }
 
+static int key_box_width(const char *const controls[], int count, bool cd_mode, int columns)
+{
+    int longest = text_width("Esc / q close", columns);
+    for (int index = 0; index < count; ++index) {
+        int control = index + (!cd_mode && index >= 9);
+        int length = text_width(controls[control], columns);
+        if (length > longest)
+            longest = length;
+    }
+    return longest + 4 < columns - 2 ? longest + 4 : columns - 2;
+}
+
 static void show_keys(bool cd_mode)
 {
     static const char *const controls[] = {
@@ -1358,7 +1370,7 @@ static void show_keys(bool cd_mode)
                 break;
             if (resized)
                 term_clear_screen();
-            int width = size.ws_col - 2 < 36 ? size.ws_col - 2 : 36;
+            int width = key_box_width(controls, count, cd_mode, size.ws_col);
             int height = size.ws_row - 2 < count + 4 ? size.ws_row - 2 : count + 4;
             int top = (size.ws_row - height) / 2;
             int left = (size.ws_col - width) / 2;

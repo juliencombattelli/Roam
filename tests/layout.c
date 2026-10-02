@@ -29,6 +29,17 @@ int main(void)
     close(input[0]);
     close(input[1]);
 
+        const char *const help_lines[] = {
+         "browse", "fold", "H / shift-space hide parents", "all parents",
+         "edit", "new file", "new directory", "rename", "delete",
+         "c               choose directory in cd mode", "quit"
+        };
+        assert(key_box_width(help_lines, 10, false, 80) ==
+            (int)strlen(help_lines[2]) + 4);
+        assert(key_box_width(help_lines, 11, true, 80) ==
+            (int)strlen(help_lines[9]) + 4);
+        assert(key_box_width(help_lines, 10, false, 24) == 22);
+
     Directory empty = {0};
     assert(content_width(&empty, 80) == 9);
     char size_text[32];
