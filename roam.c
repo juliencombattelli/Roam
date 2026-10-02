@@ -36,6 +36,7 @@
 #define ANSI_REVERSE "7"
 #define ANSI_HIDDEN "8"
 #define ANSI_STRIKETHROUGH "9"
+#define ANSI_BG_DEFAULT "49"
 #define ANSI_BG_256(value) "48;5;" ANSI_STRINGIFY(value)
 #define ANSI_FG_256(value) "38;5;" ANSI_STRINGIFY(value)
 #define ANSI_BG_RGB(red, green, blue) \
@@ -1263,10 +1264,10 @@ static long draw(const Directory *directories, size_t depth, const char *message
             if (row >= 2 && row < rows - 2 && name_width > 0) {
                 const char *color = color_rule_count
                     ? entry_color(directory, directory->entries[entry]->d_name) : NULL;
-                term_set_color(COLOR_WINDOW_BG);
+                term_set_color(ANSI_BG_DEFAULT);
                 if (color) {
                     term_set_color(color);
-                    fputs(ANSI_SGR(COLOR_WINDOW_BG), stdout);
+                    fputs(ANSI_SGR(ANSI_BG_DEFAULT), stdout);
                 }
                 if (index == active_index && entry == directory->selected)
                     term_reverse_video();
@@ -1318,7 +1319,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
         for (size_t cell = 0; cell < cells; ++cell)
             routes[cell] |= rails[cell];
     if (routes) {
-        term_set_color(COLOR_WINDOW_BG ";" COLOR_TREE_FG);
+        term_set_color(COLOR_TREE_FG);
         draw_routes(routes, columns, rows);
         term_reset_style();
         if (frame)
@@ -1331,15 +1332,15 @@ static long draw(const Directory *directories, size_t depth, const char *message
         const char *color = color_rule_count ? path_color(root->path, root_name) : NULL;
         if (color) {
             term_set_color(color);
-            fputs(ANSI_SGR(COLOR_WINDOW_BG), stdout);
+            fputs(ANSI_SGR(ANSI_BG_DEFAULT), stdout);
         } else {
-            term_set_color(COLOR_WINDOW_BG);
+            term_set_color(ANSI_BG_DEFAULT);
         }
         clipped_text(root_name, 0, root_width);
         mark_cells(frame, columns, rows, root_row, root_column - root_width - 2, root_width);
         term_reset_style();
         term_move_cursor(root_row, root_column - 1);
-        term_set_color(COLOR_WINDOW_BG ";" COLOR_TREE_FG);
+        term_set_color(COLOR_TREE_FG);
         fputs("─", stdout);
         mark_cells(frame, columns, rows, root_row, root_column - 1, 1);
         term_reset_style();
