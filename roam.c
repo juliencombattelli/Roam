@@ -356,6 +356,13 @@ static void free_directory(Directory *directory)
     free(directory->path);
 }
 
+static void free_directories(Directory *directories, size_t count)
+{
+    for (size_t index = 0; index < count; ++index)
+        free_directory(&directories[index]);
+    free(directories);
+}
+
 static void clear_directory_cache(void)
 {
     for (size_t index = 0; index < cached_count; ++index) {
@@ -1991,9 +1998,7 @@ int main(int argc, char **argv)
     size_t depth = 1;
     if (!extend_to_root(&directories, &depth)) {
         perror("ancestors");
-        for (size_t index = 0; index < depth; ++index)
-            free_directory(&directories[index]);
-        free(directories);
+        free_directories(directories, depth);
         return 1;
     }
     size_t capacity = depth;
@@ -2008,18 +2013,14 @@ int main(int argc, char **argv)
                 close(output_fd);
             if (terminal_fd >= 0)
                 close(terminal_fd);
-            for (size_t index = 0; index < depth; ++index)
-                free_directory(&directories[index]);
-            free(directories);
+            free_directories(directories, depth);
             return 1;
         }
         close(terminal_fd);
     }
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) || tcgetattr(STDIN_FILENO, &original_terminal) < 0) {
         fprintf(stderr, "An interactive terminal is required.\n");
-        for (size_t index = 0; index < depth; ++index)
-            free_directory(&directories[index]);
-        free(directories);
+        free_directories(directories, depth);
         if (output_fd >= 0)
             close(output_fd);
         return 1;
@@ -2032,9 +2033,7 @@ int main(int argc, char **argv)
     raw.c_cc[VTIME] = 0;
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0) {
         perror("tcsetattr");
-        for (size_t index = 0; index < depth; ++index)
-            free_directory(&directories[index]);
-        free(directories);
+        free_directories(directories, depth);
         if (output_fd >= 0)
             close(output_fd);
         return 1;
@@ -2165,9 +2164,7 @@ int main(int argc, char **argv)
     for (size_t index = 0; index < opened_count; ++index)
         free(opened_paths[index]);
     free(opened_paths);
-    for (size_t index = 0; index < depth; ++index)
-        free_directory(&directories[index]);
-    free(directories);
+    free_directories(directories, depth);
     free(color_rules);
     free(color_storage);
     restore_terminal();
