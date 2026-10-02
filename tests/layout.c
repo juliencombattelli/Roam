@@ -11,6 +11,8 @@ int main(void)
     int original_input = dup(STDIN_FILENO);
     assert(original_input >= 0 && dup2(input[0], STDIN_FILENO) >= 0);
     struct { const char *sequence; int expected; } keys[] = {
+        {"\033[32;2u", KEY_SHIFT_SPACE}, {"\033[27;2;32~", KEY_SHIFT_SPACE},
+        {"A", 'A'}, {"\033[97:65;2u", 'A'},
         {"?", '?'}, {"\033[47:63;2u", '?'}, {"\033[44:63;2u", '?'},
         {"\033[44;2;63u", '?'}, {"\033[44:63;2;63u", '?'}, {"\033[0;;63u", '?'},
         {"\033[44:60;2;63u", '?'}, {"\033[110;1;110u", 'n'},
@@ -68,9 +70,97 @@ int main(void)
     assert(child && mkdir(child, 0700) == 0);
     Directory root;
     assert(load_directory(strdup(path), &root) == 0);
+    Directory *navigation = malloc(sizeof(*navigation));
+    assert(navigation && load_directory(strdup(path), navigation) == 0);
+    size_t navigation_depth = 1;
+    assert(extend_to_root(&navigation, &navigation_depth));
+    assert(navigation_depth >= 3 && strcmp(navigation[0].path, "/") == 0);
+    for (size_t index = 0; index < navigation_depth - 1; ++index) {
+        Directory *parent = &navigation[index];
+        const char *next_path = navigation[index + 1].path;
+        char *selected = child_path(parent->path, parent->entries[parent->selected]->d_name);
+        assert(selected && strcmp(selected, next_path) == 0);
+        free(selected);
+    }
+    Column *ancestor_columns = calloc(navigation_depth + 1, sizeof(*ancestor_columns));
+    assert(ancestor_columns);
+    ancestor_columns[0].directory = navigation;
+    size_t visible_count = 1;
+    collect_columns(ancestor_columns, &visible_count, navigation_depth + 1, 0,
+                    navigation, navigation_depth);
+    assert(visible_count == navigation_depth);
+    assert(strcmp(ancestor_columns[visible_count - 1].directory->path, path) == 0);
+    int selected = navigation[navigation_depth - 1].selected;
+    size_t view_base = navigation_depth - 2;
+    bool all_parents_visible = true;
+    focus_view_root(navigation_depth, &view_base, &all_parents_visible);
+    assert(view_base == navigation_depth - 1 && !all_parents_visible);
+    focus_view_root(navigation_depth, &view_base, &all_parents_visible);
+    assert(view_base == navigation_depth - 1);
     toggle_open(strdup(child));
+    ancestor_columns[0].directory = &navigation[view_base];
+    visible_count = 1;
+    collect_columns(ancestor_columns, &visible_count, navigation_depth + 1, 0,
+                    &navigation[view_base], navigation_depth - view_base);
+    assert(visible_count == 2 && strcmp(ancestor_columns[1].directory->path, child) == 0);
+    assert(navigation[navigation_depth - 1].selected == selected);
+    toggle_open(strdup(child));
+    clear_directory_cache();
+    free(ancestor_columns);
+    for (size_t index = 0; index < navigation_depth; ++index)
+        free_directory(&navigation[index]);
+    free(navigation);
+    assert(setenv("LS_COLORS", "di=01;34", 1) == 0);
+    load_colors();
+    assert(strcmp(path_color(root.path, strrchr(root.path, '/') + 1), "01;34") == 0);
+    assert(strcmp(entry_color(&root, "opened"), "01;34") == 0);
+    Directory focused;
+    assert(load_directory(strdup(child), &focused) == 0);
     Column columns[4] = {{.directory = &root}};
     size_t count = 1;
+    collect_columns(columns, &count, 4, 0, (Directory[]){root, focused}, 2);
+    assert(count == 2 && columns[1].directory->path == focused.path);
+    assert(!is_open(child));
+    free_directory(&focused);
+
+    Directory *browsing = malloc(sizeof(*browsing));
+    assert(browsing && load_directory(strdup(path), browsing) == 0);
+    size_t browsing_depth = 1;
+    size_t browsing_capacity = 1;
+    char browse_message[256] = "";
+    size_t browse_base = 0;
+    assert(enter_directory(&browsing, &browsing_depth, &browsing_capacity,
+                           browse_message, sizeof(browse_message)));
+    assert(browsing_depth == 2 && is_open(child));
+    leave_directory(browsing, &browsing_depth, &browse_base);
+    assert(browsing_depth == 1 && is_open(child));
+    toggle_open(strdup(child));
+    assert(!is_open(child));
+    assert(enter_directory(&browsing, &browsing_depth, &browsing_capacity,
+                           browse_message, sizeof(browse_message)));
+    assert(browsing_depth == 2 && is_open(child));
+    toggle_open(strdup(child));
+    leave_directory(browsing, &browsing_depth, &browse_base);
+    assert(browsing_depth == 1 && !is_open(child));
+    free_directory(browsing);
+    free(browsing);
+
+    Directory *starting_path = malloc(sizeof(*starting_path));
+    assert(starting_path && load_directory(strdup(child), starting_path) == 0);
+    browsing_depth = 1;
+    assert(extend_to_root(&starting_path, &browsing_depth));
+    browse_base = browsing_depth - 1;
+    leave_directory(starting_path, &browsing_depth, &browse_base);
+    assert(strcmp(starting_path[browsing_depth - 1].path, path) == 0 && is_open(child));
+    assert(browse_base == browsing_depth - 1);
+    for (size_t index = 0; index < browsing_depth; ++index)
+        free_directory(&starting_path[index]);
+    free(starting_path);
+    toggle_open(strdup(child));
+    assert(!is_open(child));
+    toggle_open(strdup(child));
+    assert(is_open(child));
+    count = 1;
     collect_columns(columns, &count, 4, 0, &root, 1);
     assert(count == 2 && cached_count == 1);
     Directory *snapshot = columns[1].directory;

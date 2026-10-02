@@ -11,11 +11,13 @@ starts in the current working directory. Run it from an interactive terminal.
 Set `EDITOR` to a terminal editor (arguments are allowed, e.g. `EDITOR='vim -u NONE'`).
 
 - Up/Down (or `k`/`j`): select an entry
-- Right (or `l`): open the selected directory
+- Right (or `l`): open the selected directory; it stays expanded when moving back
 - Left (or `h`): open the parent directory, including from the starting column
 - Space: open or close the selected directory's tree without moving focus;
   opened directories stay visible in groups within their depth column until closed individually
-- Shift+Space (or `H`): show or hide the active directory's parent without moving focus
+- Shift+Space (or `H`): show the current directory as the view root, hiding its
+	ancestors without changing focus, selection, or opened descendants
+- `A`: toggle the full ancestor chain up to `/`
 - Enter (or `e`): open the selected file or directory with `$EDITOR`
 - `n` / `N`: create a file / directory in the current directory
 - `r`: rename the selected entry (never overwrites another entry)
