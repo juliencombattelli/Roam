@@ -443,7 +443,25 @@ static int accept_entry(const struct dirent *entry)
     return strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0;
 }
 
-static int text_width(const char *source, int limit);
+static int text_width(const char *source, int limit)
+{
+    mbstate_t state = {0};
+    int width = 0;
+    while (*source && width < limit) {
+        wchar_t character;
+        size_t bytes = mbrtowc(&character, source, MB_CUR_MAX, &state);
+        if (bytes == (size_t)-1 || bytes == (size_t)-2) {
+            bytes = 1;
+            memset(&state, 0, sizeof(state));
+            width++;
+        } else {
+            int cells = wcwidth(character);
+            width += cells < 0 || character == 127 || character == 27 ? 1 : cells;
+        }
+        source += bytes;
+    }
+    return width > limit ? limit : width;
+}
 
 static int load_directory(char *path, Directory *directory)
 {
@@ -501,12 +519,6 @@ static char *child_path(const char *parent, const char *name)
     return path;
 }
 
-static void warn_unsupported_sgr(unsigned code)
-{
-    (void)code;
-    color_warning = true;
-}
-
 static bool next_sgr_parameter(const char **cursor, bool *has_parameter,
                                unsigned *parameter)
 {
@@ -552,7 +564,7 @@ static TermSGR parse_sgr_parameters(const char *parameters)
             bool foreground = code == 38;
             unsigned mode;
             if (!next_sgr_parameter(&cursor, &has_parameter, &mode)) {
-                warn_unsupported_sgr(code);
+                color_warning = true;
                 continue;
             }
             if (mode == 5) {
@@ -566,7 +578,7 @@ static TermSGR parse_sgr_parameters(const char *parameters)
                         sgr.bg = color;
                     recognized = true;
                 } else {
-                    warn_unsupported_sgr(code);
+                    color_warning = true;
                 }
             } else if (mode == 2) {
                 unsigned red, green, blue;
@@ -581,10 +593,10 @@ static TermSGR parse_sgr_parameters(const char *parameters)
                         sgr.bg = color;
                     recognized = true;
                 } else {
-                    warn_unsupported_sgr(code);
+                    color_warning = true;
                 }
             } else {
-                warn_unsupported_sgr(code);
+                color_warning = true;
             }
             continue;
         }
@@ -649,7 +661,7 @@ static TermSGR parse_sgr_parameters(const char *parameters)
             sgr.bg = ANSI_COLOR(code >= 100 ? code - 100 + 8 : code - 40);
             recognized = true;
         } else {
-            warn_unsupported_sgr(code);
+            color_warning = true;
         }
     }
     if (!recognized)
@@ -882,26 +894,6 @@ static void clipped_text(const char *source, int skip, int width)
 static void text(const char *source, int width)
 {
     clipped_text(source, 0, width);
-}
-
-static int text_width(const char *source, int limit)
-{
-    mbstate_t state = {0};
-    int width = 0;
-    while (*source && width < limit) {
-        wchar_t character;
-        size_t bytes = mbrtowc(&character, source, MB_CUR_MAX, &state);
-        if (bytes == (size_t)-1 || bytes == (size_t)-2) {
-            bytes = 1;
-            memset(&state, 0, sizeof(state));
-            width++;
-        } else {
-            int cells = wcwidth(character);
-            width += cells < 0 || character == 127 || character == 27 ? 1 : cells;
-        }
-        source += bytes;
-    }
-    return width > limit ? limit : width;
 }
 
 static int content_width(const Directory *directory, int limit)
