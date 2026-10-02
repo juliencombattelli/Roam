@@ -1329,7 +1329,7 @@ static int read_key(void)
 static void show_keys(bool cd_mode)
 {
     static const char *const controls[] = {
-        "arrows / hjkl   browse",
+        "↑↓←→            browse",
         "space           expand",
         "H / shift-space parents",
         "e / Enter       edit",
@@ -1403,10 +1403,10 @@ static void show_keys(bool cd_mode)
         if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0)
             continue;
         int visible = (size.ws_row - 2 < count + 4 ? size.ws_row - 2 : count + 4) - 4;
-        if ((key == KEY_DOWN || key == 'j') && first + visible < count) {
+        if (key == KEY_DOWN && first + visible < count) {
             ++first;
             repaint = true;
-        } else if ((key == KEY_UP || key == 'k') && first > 0) {
+        } else if (key == KEY_UP && first > 0) {
             --first;
             repaint = true;
         }
@@ -1880,9 +1880,9 @@ int main(int argc, char **argv)
         size_t previous_depth = depth;
         Directory *current = &directories[depth - 1];
         int previous = current->selected;
-        if ((key == KEY_UP || key == 'k') && current->selected > 0)
+        if (key == KEY_UP && current->selected > 0)
             --current->selected;
-        else if ((key == KEY_DOWN || key == 'j') && current->selected + 1 < current->count)
+        else if (key == KEY_DOWN && current->selected + 1 < current->count)
             ++current->selected;
         else if (key == ' ' && current->count) {
             char *child = child_path(current->path, current->entries[current->selected]->d_name);
@@ -1918,7 +1918,7 @@ int main(int argc, char **argv)
             if (chosen_directory)
                 break;
         }
-        else if (key == KEY_LEFT || key == 'h') {
+        else if (key == KEY_LEFT) {
             char *previous_path = depth == 1 ? strdup(current->path) : NULL;
             leave_directory(directories, &depth, message, sizeof(message), &dirty);
             if (previous_path && strcmp(previous_path, directories[0].path) != 0 &&
@@ -1927,7 +1927,7 @@ int main(int argc, char **argv)
             else
                 free(previous_path);
         }
-        else if ((key == KEY_RIGHT || key == 'l') && current->count &&
+        else if (key == KEY_RIGHT && current->count &&
                  !enter_directory(&directories, &depth, &capacity, message, sizeof(message))) {
             dirty = true;
             continue;
@@ -1939,10 +1939,10 @@ int main(int argc, char **argv)
             else
                 free(child);
         }
-        bool selection_changed = (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') &&
+        bool selection_changed = (key == KEY_UP || key == KEY_DOWN) &&
                                  current->selected != previous;
         bool directory_changed = depth != previous_depth ||
-                                 ((key == KEY_LEFT || key == 'h') && dirty);
+                                 (key == KEY_LEFT && dirty);
         if (directory_changed)
             animate_depth = true;
         bool contents_may_change = key == 'n' || key == 'N' || key == 'r' || key == 'd' ||
@@ -1961,11 +1961,11 @@ int main(int argc, char **argv)
                 load_parent_directory(&directories[0], &parent_preview);
             dirty = true;
         }
-        if (key == KEY_UP || key == KEY_DOWN || key == 'j' || key == 'k') {
+        if (key == KEY_UP || key == KEY_DOWN) {
             if (current->selected == previous && !had_message && !resized && !dirty)
                 continue;
         }
-        if ((key == KEY_RIGHT || key == KEY_LEFT || key == 'h' || key == 'l') &&
+        if ((key == KEY_RIGHT || key == KEY_LEFT) &&
             depth == previous_depth && strcmp(message, previous_message) == 0 && !resized && !dirty)
             continue;
         dirty = true;
