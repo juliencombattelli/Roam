@@ -8,8 +8,13 @@
 
 int main(void)
 {
+    assert(strcmp(ANSI_BOLD, "1") == 0);
+    assert(strcmp(ANSI_ITALIC, "3") == 0);
+    assert(strcmp(ANSI_UNDERLINE, "4") == 0);
+    assert(strcmp(ANSI_STRIKETHROUGH, "9") == 0);
+    assert(strcmp(ANSI_BOLD ";" ANSI_ITALIC ";" ANSI_UNDERLINE, "1;3;4") == 0);
     assert(strcmp(COLOR_STATUS_CURRENT, "48;5;234;38;5;231;1") == 0);
-    assert(strcmp(COLOR_PERMISSION_DIRECTORY, "0;48;5;234;1;34") == 0);
+    assert(strcmp(COLOR_PERMISSION_DIRECTORY, "48;5;234;38;5;34;1") == 0);
     const char *rgb_parameters = ANSI_BG_RGB(TEST_RGB_COMPONENT, 20, 255) ";"
                                  ANSI_FG_RGB(10, 128, 200);
     assert(strcmp(rgb_parameters, "48;2;17;20;255;38;2;10;128;200") == 0);
@@ -23,7 +28,7 @@ int main(void)
     char sequence[64];
     size_t sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
     sequence[sequence_length] = '\0';
-    assert(strcmp(sequence, "\033[48;2;17;20;255;38;2;10;128;200m") == 0);
+    assert(strcmp(sequence, "\033[0;48;2;17;20;255;38;2;10;128;200m") == 0);
     assert(dup2(original_output, STDOUT_FILENO) >= 0);
     close(original_output);
     fclose(color_output);

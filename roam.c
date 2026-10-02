@@ -28,13 +28,20 @@
 #define ANSI_STRINGIFY_INNER(value) #value
 #define ANSI_STRINGIFY(value) ANSI_STRINGIFY_INNER(value)
 #define ANSI_SGR(parameters) "\033[" parameters "m"
+#define ANSI_BOLD "1"
+#define ANSI_DIM "2"
+#define ANSI_ITALIC "3"
+#define ANSI_UNDERLINE "4"
+#define ANSI_BLINK "5"
+#define ANSI_REVERSE "7"
+#define ANSI_HIDDEN "8"
+#define ANSI_STRIKETHROUGH "9"
 #define ANSI_BG_256(value) "48;5;" ANSI_STRINGIFY(value)
 #define ANSI_FG_256(value) "38;5;" ANSI_STRINGIFY(value)
 #define ANSI_BG_RGB(red, green, blue) \
     "48;2;" ANSI_STRINGIFY(red) ";" ANSI_STRINGIFY(green) ";" ANSI_STRINGIFY(blue)
 #define ANSI_FG_RGB(red, green, blue) \
     "38;2;" ANSI_STRINGIFY(red) ";" ANSI_STRINGIFY(green) ";" ANSI_STRINGIFY(blue)
-#define ANSI_PERMISSION(style) "0;" ANSI_BG_256(234) ";" style
 
 enum {
     MIN_TERMINAL_COLUMNS = 12,
@@ -62,23 +69,23 @@ enum {
     KEY_SEQUENCE_TIMEOUT_USEC = 50000
 };
 
-static const char *const COLOR_METADATA = "0;" ANSI_BG_256(234) ";39";
-static const char *const COLOR_METADATA_MUTED = "0;" ANSI_BG_256(234) ";" ANSI_FG_256(244);
+static const char *const COLOR_METADATA = ANSI_BG_256(234);
+static const char *const COLOR_METADATA_MUTED = ANSI_BG_256(234) ";" ANSI_FG_256(244);
 static const char *const COLOR_STATUS_TEXT = ANSI_BG_256(234) ";" ANSI_FG_256(252);
 static const char *const COLOR_STATUS_ACCENT = ANSI_BG_256(234) ";" ANSI_FG_256(110);
-static const char *const COLOR_STATUS_CURRENT = ANSI_BG_256(234) ";" ANSI_FG_256(231) ";1";
+static const char *const COLOR_STATUS_CURRENT = ANSI_BG_256(234) ";" ANSI_FG_256(231) ";" ANSI_BOLD;
 static const char *const COLOR_STATUS_PARENT = ANSI_BG_256(234) ";" ANSI_FG_256(80);
 static const char *const COLOR_STATUS_SUMMARY = ANSI_BG_256(234) ";" ANSI_FG_256(180);
 static const char *const COLOR_STATUS_HELP = ANSI_BG_256(234) ";" ANSI_FG_256(152);
 static const char *const COLOR_TREE = ANSI_FG_256(109);
-static const char *const COLOR_PERMISSION_DIRECTORY = ANSI_PERMISSION("1;34");
-static const char *const COLOR_PERMISSION_LINK = ANSI_PERMISSION("1;36");
-static const char *const COLOR_PERMISSION_OTHER = ANSI_PERMISSION("1;37");
-static const char *const COLOR_PERMISSION_MISSING = ANSI_PERMISSION("2");
-static const char *const COLOR_PERMISSION_READ = ANSI_PERMISSION("32");
-static const char *const COLOR_PERMISSION_WRITE = ANSI_PERMISSION("33");
-static const char *const COLOR_PERMISSION_EXECUTE = ANSI_PERMISSION("31");
-static const char *const COLOR_PERMISSION_SPECIAL = ANSI_PERMISSION("1;35");
+static const char *const COLOR_PERMISSION_DIRECTORY = ANSI_BG_256(234) ";" ANSI_FG_256(34) ";" ANSI_BOLD;
+static const char *const COLOR_PERMISSION_LINK = ANSI_BG_256(234) ";" ANSI_FG_256(36) ";" ANSI_BOLD;
+static const char *const COLOR_PERMISSION_OTHER = ANSI_BG_256(234) ";" ANSI_FG_256(37) ";" ANSI_BOLD;
+static const char *const COLOR_PERMISSION_MISSING = ANSI_BG_256(234) ";" ANSI_DIM;
+static const char *const COLOR_PERMISSION_READ = ANSI_BG_256(234) ";" ANSI_FG_256(32);
+static const char *const COLOR_PERMISSION_WRITE = ANSI_BG_256(234) ";" ANSI_FG_256(33);
+static const char *const COLOR_PERMISSION_EXECUTE = ANSI_BG_256(234) ";" ANSI_FG_256(31);
+static const char *const COLOR_PERMISSION_SPECIAL = ANSI_BG_256(234) ";" ANSI_FG_256(35) ";" ANSI_BOLD;
 static const char *const EMPTY_DIRECTORY_LABEL = "(empty)";
 static const char *const SIZE_UNITS[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
 static const char *const TREE_GLYPHS[] = {
@@ -279,7 +286,7 @@ static void term_clear_line(void)
 
 static void term_set_color(const char *parameters)
 {
-    printf(ANSI_SGR("%s"), parameters);
+    printf(ANSI_SGR("0;%s"), parameters);
 }
 
 static void term_reverse_video(void)
