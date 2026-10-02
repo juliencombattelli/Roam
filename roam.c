@@ -57,7 +57,6 @@ typedef struct {
     unsigned style;
     TermColor fg;
     TermColor bg;
-    const char *parameters;
 } TermSGR;
 
 #define ANSI_COLOR(number) \
@@ -144,13 +143,15 @@ typedef struct {
 
 typedef struct {
     char *key;
-    char *sgr;
+    TermSGR sgr;
+    bool target;
 } ColorRule;
 
 static struct termios original_terminal;
 static bool terminal_active;
 static volatile sig_atomic_t stopped;
 static volatile sig_atomic_t resized;
+static bool color_warning;
 static ColorRule *color_rules;
 static size_t color_rule_count;
 static char *color_storage;
@@ -381,19 +382,12 @@ static void term_set_color_(TermSGR sgr)
         TERM_STYLE_REVERSE | TERM_STYLE_HIDDEN | TERM_STYLE_STRIKETHROUGH;
     bool has_color = (sgr.fg.kind != TERM_COLOR_UNSET && term_color_is_valid(sgr.fg)) ||
                      (sgr.bg.kind != TERM_COLOR_UNSET && term_color_is_valid(sgr.bg));
-    if (sgr.noreset && !(sgr.style & supported_styles) && !has_color &&
-        !sgr.parameters)
+    if (sgr.noreset && !(sgr.style & supported_styles) && !has_color)
         return;
     bool has_parameter = false;
     fputs("\033[", stdout);
     if (!sgr.noreset)
         term_write_sgr_parameter(&has_parameter, 0);
-    if (sgr.parameters && *sgr.parameters) {
-        if (has_parameter)
-            putchar(';');
-        fputs(sgr.parameters, stdout);
-        has_parameter = true;
-    }
     term_write_color(&has_parameter, sgr.bg, false);
     term_write_color(&has_parameter, sgr.fg, true);
     const unsigned style_bits[] = {
@@ -415,9 +409,10 @@ static void term_set_color_(TermSGR sgr)
 
 static void term_set_breadcrumb_color(TermSGR color, bool selected)
 {
-    term_set_color(.parameters = color.parameters,
+    term_set_color(.style = color.style | (selected ? TERM_STYLE_BOLD : 0),
+                   .fg = color.fg,
                    .bg = COLOR_STATUS_LINE_BG,
-                   .style = selected ? TERM_STYLE_BOLD : 0);
+                   .noreset = color.noreset);
 }
 
 static void term_reverse_video(void)
@@ -506,6 +501,168 @@ static char *child_path(const char *parent, const char *name)
     return path;
 }
 
+static void warn_unsupported_sgr(unsigned code)
+{
+    (void)code;
+    color_warning = true;
+}
+
+static bool next_sgr_parameter(const char **cursor, bool *has_parameter,
+                               unsigned *parameter)
+{
+    if (!*has_parameter)
+        return false;
+    const char *position = *cursor;
+    unsigned value = 0;
+    bool overflow = false;
+    while (*position >= '0' && *position <= '9') {
+        unsigned digit = (unsigned)(*position - '0');
+        if (value > (UINT_MAX - digit) / 10)
+            overflow = true;
+        else if (!overflow)
+            value = value * 10 + digit;
+        ++position;
+    }
+    if (*position == ';') {
+        *cursor = position + 1;
+    } else if (*position == '\0') {
+        *cursor = position;
+        *has_parameter = false;
+    } else {
+        *has_parameter = false;
+        return false;
+    }
+    *parameter = value;
+    return !overflow;
+}
+
+static TermSGR parse_sgr_parameters(const char *parameters)
+{
+    TermSGR sgr = {0};
+    bool recognized = false;
+    bool has_parameter = true;
+    const char *cursor = parameters;
+    while (has_parameter) {
+        unsigned code;
+        if (!next_sgr_parameter(&cursor, &has_parameter, &code)) {
+            color_warning = true;
+            continue;
+        }
+        if (code == 38 || code == 48 || code == 58) {
+            bool foreground = code == 38;
+            unsigned mode;
+            if (!next_sgr_parameter(&cursor, &has_parameter, &mode)) {
+                warn_unsupported_sgr(code);
+                continue;
+            }
+            if (mode == 5) {
+                unsigned index;
+                if (next_sgr_parameter(&cursor, &has_parameter, &index) &&
+                    index <= 255 && code != 58) {
+                    TermColor color = ANSI_COLOR_256(index);
+                    if (foreground)
+                        sgr.fg = color;
+                    else
+                        sgr.bg = color;
+                    recognized = true;
+                } else {
+                    warn_unsupported_sgr(code);
+                }
+            } else if (mode == 2) {
+                unsigned red, green, blue;
+                if (next_sgr_parameter(&cursor, &has_parameter, &red) &&
+                    next_sgr_parameter(&cursor, &has_parameter, &green) &&
+                    next_sgr_parameter(&cursor, &has_parameter, &blue) &&
+                    red <= 255 && green <= 255 && blue <= 255 && code != 58) {
+                    TermColor color = ANSI_COLOR_RGB(red, green, blue);
+                    if (foreground)
+                        sgr.fg = color;
+                    else
+                        sgr.bg = color;
+                    recognized = true;
+                } else {
+                    warn_unsupported_sgr(code);
+                }
+            } else {
+                warn_unsupported_sgr(code);
+            }
+            continue;
+        }
+        if (code == 0) {
+            sgr = (TermSGR){0};
+            recognized = true;
+        } else if (code == 1) {
+            sgr.style |= TERM_STYLE_BOLD;
+            recognized = true;
+        } else if (code == 2) {
+            sgr.style |= TERM_STYLE_DIM;
+            recognized = true;
+        } else if (code == 3) {
+            sgr.style |= TERM_STYLE_ITALIC;
+            recognized = true;
+        } else if (code == 4) {
+            sgr.style |= TERM_STYLE_UNDERLINE;
+            recognized = true;
+        } else if (code == 5 || code == 6) {
+            sgr.style |= TERM_STYLE_BLINK;
+            recognized = true;
+        } else if (code == 7) {
+            sgr.style |= TERM_STYLE_REVERSE;
+            recognized = true;
+        } else if (code == 8) {
+            sgr.style |= TERM_STYLE_HIDDEN;
+            recognized = true;
+        } else if (code == 9) {
+            sgr.style |= TERM_STYLE_STRIKETHROUGH;
+            recognized = true;
+        } else if (code == 22) {
+            sgr.style &= ~(TERM_STYLE_BOLD | TERM_STYLE_DIM);
+            recognized = true;
+        } else if (code == 23) {
+            sgr.style &= ~TERM_STYLE_ITALIC;
+            recognized = true;
+        } else if (code == 24) {
+            sgr.style &= ~TERM_STYLE_UNDERLINE;
+            recognized = true;
+        } else if (code == 25) {
+            sgr.style &= ~TERM_STYLE_BLINK;
+            recognized = true;
+        } else if (code == 27) {
+            sgr.style &= ~TERM_STYLE_REVERSE;
+            recognized = true;
+        } else if (code == 28) {
+            sgr.style &= ~TERM_STYLE_HIDDEN;
+            recognized = true;
+        } else if (code == 29) {
+            sgr.style &= ~TERM_STYLE_STRIKETHROUGH;
+            recognized = true;
+        } else if (code == 39) {
+            sgr.fg = ANSI_COLOR_DEFAULT;
+            recognized = true;
+        } else if (code == 49) {
+            sgr.bg = ANSI_COLOR_DEFAULT;
+            recognized = true;
+        } else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+            sgr.fg = ANSI_COLOR(code >= 90 ? code - 90 + 8 : code - 30);
+            recognized = true;
+        } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
+            sgr.bg = ANSI_COLOR(code >= 100 ? code - 100 + 8 : code - 40);
+            recognized = true;
+        } else {
+            warn_unsupported_sgr(code);
+        }
+    }
+    if (!recognized)
+        sgr.noreset = true;
+    return sgr;
+}
+
+static bool term_sgr_has_effect(TermSGR sgr)
+{
+    return !sgr.noreset || sgr.style || sgr.fg.kind != TERM_COLOR_UNSET ||
+           sgr.bg.kind != TERM_COLOR_UNSET;
+}
+
 static void load_colors(void)
 {
     const char *setting = getenv("LS_COLORS");
@@ -546,32 +703,36 @@ static void load_colors(void)
         for (const char *cursor = separator; *cursor; ++cursor)
             if ((*cursor < '0' || *cursor > '9') && *cursor != ';')
                 valid = false;
-        if (valid || (strcmp(part, "ln") == 0 && strcmp(separator, "target") == 0))
-            color_rules[color_rule_count++] = (ColorRule){part, separator};
+        bool target = strcmp(part, "ln") == 0 && strcmp(separator, "target") == 0;
+        if (!valid && !target) {
+            color_warning = true;
+            continue;
+        }
+        TermSGR sgr = target ? (TermSGR){.noreset = true} :
+                              parse_sgr_parameters(separator);
+        color_rules[color_rule_count++] = (ColorRule){part, sgr, target};
     }
 }
 
-static const char *color_rule_parameters(const char *key)
+static const ColorRule *find_color_rule(const char *key)
 {
-    const char *parameters = NULL;
+    const ColorRule *rule = NULL;
     for (size_t index = 0; index < color_rule_count; ++index)
         if (strcmp(color_rules[index].key, key) == 0)
-            parameters = color_rules[index].sgr;
-    return parameters;
+            rule = &color_rules[index];
+    return rule;
 }
 
 static TermSGR color_rule(const char *key)
 {
-    const char *parameters = color_rule_parameters(key);
-    if (!parameters || strcmp(parameters, "target") == 0)
-        return (TermSGR){.noreset = true};
-    return (TermSGR){.parameters = parameters};
+    const ColorRule *rule = find_color_rule(key);
+    return rule ? rule->sgr : (TermSGR){.noreset = true};
 }
 
 static bool color_rule_uses_target(const char *key)
 {
-    const char *parameters = color_rule_parameters(key);
-    return parameters && strcmp(parameters, "target") == 0;
+    const ColorRule *rule = find_color_rule(key);
+    return rule && rule->target;
 }
 
 static TermSGR path_color(const char *path, const char *name)
@@ -586,7 +747,7 @@ static TermSGR path_color(const char *path, const char *name)
         bool target = color_rule_uses_target("ln");
         if (stat(path, &info) < 0) {
             color = color_rule("or");
-            if (color.parameters)
+            if (term_sgr_has_effect(color))
                 return color;
             return target ? color : link_color;
         } else {
@@ -601,7 +762,7 @@ static TermSGR path_color(const char *path, const char *name)
             color = color_rule("ow");
         else if (info.st_mode & S_ISVTX)
             color = color_rule("st");
-        if (!color.parameters)
+        if (!term_sgr_has_effect(color))
             color = color_rule("di");
     } else if (S_ISREG(info.st_mode)) {
         if (info.st_mode & S_ISUID)
@@ -615,7 +776,7 @@ static TermSGR path_color(const char *path, const char *name)
         for (size_t index = 0; index < color_rule_count; ++index)
             if (color_rules[index].key[0] == '*' &&
                 fnmatch(color_rules[index].key, name, 0) == 0)
-                color = (TermSGR){.parameters = color_rules[index].sgr};
+                color = color_rules[index].sgr;
     } else if (S_ISFIFO(info.st_mode)) {
         color = color_rule("pi");
     } else if (S_ISSOCK(info.st_mode)) {
@@ -1012,8 +1173,9 @@ static void draw_entry_info(const struct stat *info, const char *path,
                                  mode[index] == 't' || mode[index] == 'T';
         TermSGR color = permission_color(path, name, mode[index], index == 0);
         if (environment_color) {
-            if (color.parameters) {
-                term_set_color(.parameters = color.parameters, .bg = COLOR_STATUS_LINE_BG);
+            if (term_sgr_has_effect(color)) {
+                term_set_color(.style = color.style, .fg = color.fg,
+                               .bg = COLOR_STATUS_LINE_BG);
             } else if (index == 0 && mode[index] == '.') {
                 term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_PERMISSION_FILE_TYPE_FG);
             } else {
@@ -1145,7 +1307,7 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
             used += 3;
         }
         TermSGR color = segment_colors[index];
-        if (color.parameters)
+        if (term_sgr_has_effect(color))
             term_set_breadcrumb_color(color, index == count - 1 && focused_directory);
         else {
             bool current = index == count - 1;
@@ -1396,8 +1558,9 @@ static long draw(const Directory *directories, size_t depth, const char *message
                 TermSGR color = color_rule_count
                     ? entry_color(directory, directory->entries[entry]->d_name)
                     : (TermSGR){.noreset = true};
-                if (color.parameters)
-                    term_set_color(.parameters = color.parameters, .bg = ANSI_COLOR_DEFAULT);
+                if (term_sgr_has_effect(color))
+                    term_set_color(.style = color.style, .fg = color.fg,
+                                   .bg = ANSI_COLOR_DEFAULT);
                 else
                     term_set_color(.bg = ANSI_COLOR_DEFAULT);
                 if (index == active_index && entry == directory->selected)
@@ -1462,8 +1625,9 @@ static long draw(const Directory *directories, size_t depth, const char *message
         term_move_cursor(root_row, root_column - root_width - 2);
         TermSGR color = color_rule_count ? path_color(root->path, root_name)
                                          : (TermSGR){.noreset = true};
-        if (color.parameters) {
-            term_set_color(.parameters = color.parameters, .bg = ANSI_COLOR_DEFAULT);
+        if (term_sgr_has_effect(color)) {
+            term_set_color(.style = color.style, .fg = color.fg,
+                           .bg = ANSI_COLOR_DEFAULT);
         } else {
             term_set_color(.bg = ANSI_COLOR_DEFAULT);
         }
@@ -1491,6 +1655,9 @@ static long draw(const Directory *directories, size_t depth, const char *message
         if (*message) {
             term_clear_line();
             text(message, columns);
+        } else if (color_warning) {
+            term_clear_line();
+            text("Warning: unsupported LS_COLORS styles ignored", columns);
         } else
             term_clear_line();
     }
@@ -2115,6 +2282,7 @@ int main(int argc, char **argv)
         return 1;
     }
     setlocale(LC_ALL, "");
+    load_colors();
     char *path = realpath(argc > (cd_mode ? 2 : 1) ? argv[argc - 1] : ".", NULL);
     if (!path) {
         perror("directory");
@@ -2178,7 +2346,6 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGHUP, &action, NULL);
     term_enter_alternate_buffer();
-    load_colors();
 
     bool parent_visible = false;
     char *chosen_directory = NULL;

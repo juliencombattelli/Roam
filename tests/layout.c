@@ -61,20 +61,23 @@ int main(void)
     assert(strcmp(sequence, "\033[0;48;5;234;38;5;231;1m") == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     assert(ftruncate(fileno(color_output), 0) == 0);
-    term_set_breadcrumb_color((TermSGR){.parameters = "1;31;44"}, true);
+    term_set_breadcrumb_color((TermSGR){.style = TERM_STYLE_BOLD,
+                                        .fg = ANSI_COLOR(1),
+                                        .bg = ANSI_COLOR(4)}, true);
     assert(fflush(stdout) == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
     sequence[sequence_length] = '\0';
-    assert(strcmp(sequence, "\033[0;1;31;44;48;5;234;1m") == 0);
+    assert(strcmp(sequence, "\033[0;48;5;234;31;1m") == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     assert(ftruncate(fileno(color_output), 0) == 0);
-    term_set_breadcrumb_color((TermSGR){.parameters = "31;44"}, false);
+    term_set_breadcrumb_color((TermSGR){.fg = ANSI_COLOR(1),
+                                        .bg = ANSI_COLOR(4)}, false);
     assert(fflush(stdout) == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
     sequence[sequence_length] = '\0';
-    assert(strcmp(sequence, "\033[0;31;44;48;5;234m") == 0);
+    assert(strcmp(sequence, "\033[0;48;5;234;31m") == 0);
     assert(dup2(original_output, STDOUT_FILENO) >= 0);
     close(original_output);
     fclose(color_output);
@@ -193,25 +196,40 @@ int main(void)
     for (size_t index = 0; index < navigation_depth; ++index)
         free_directory(&navigation[index]);
     free(navigation);
-    assert(setenv("LS_COLORS", "di=01;34:*.txt=38;5;120:ex=01;32:ln=target", 1) == 0);
+        assert(setenv("LS_COLORS", "di=01;34:*.txt=38;5;120;55:ex=01;32:ln=target", 1) == 0);
     load_colors();
+        assert(color_warning);
+    TermSGR parsed = parse_sgr_parameters("1;22;2;38;2;17;20;255;48;5;12;39;4");
+    assert(parsed.style == (TERM_STYLE_DIM | TERM_STYLE_UNDERLINE));
+    assert(parsed.fg.kind == TERM_COLOR_DEFAULT);
+    assert(parsed.bg.kind == TERM_COLOR_INDEXED && parsed.bg.value.index == 12);
+        parsed = parse_sgr_parameters("58;5;120;31");
+        assert(parsed.style == 0 && parsed.fg.kind == TERM_COLOR_BASIC &&
+            parsed.fg.value.index == 1);
     char *target_link = child_path(path, "target-link");
     assert(target_link && symlink("opened", target_link) == 0);
-    assert(color_rule_uses_target("ln") && color_rule("ln").parameters == NULL);
-    assert(strcmp(path_color(target_link, "target-link").parameters, "01;34") == 0);
+        assert(color_rule_uses_target("ln") && !term_sgr_has_effect(color_rule("ln")));
+        TermSGR color = path_color(target_link, "target-link");
+        assert(color.style == TERM_STYLE_BOLD && color.fg.kind == TERM_COLOR_BASIC &&
+            color.fg.value.index == 4);
     assert(unlink(target_link) == 0);
     free(target_link);
-    assert(strcmp(permission_color(root.path, strrchr(root.path, '/') + 1,
-                                   'd', true).parameters, "01;34") == 0);
-    assert(permission_color(root.path, "entry", '.', true).parameters == NULL);
-    assert(permission_color(root.path, "entry", 'r', false).parameters == NULL);
-    assert(permission_color(root.path, "entry", 'w', false).parameters == NULL);
-    assert(strcmp(permission_color(root.path, "entry", 'x', false).parameters,
-                  "01;32") == 0);
-    assert(permission_color(root.path, "entry", '-', false).parameters == NULL);
-    assert(strcmp(path_color(root.path, strrchr(root.path, '/') + 1).parameters,
-                  "01;34") == 0);
-    assert(strcmp(entry_color(&root, "opened").parameters, "01;34") == 0);
+        color = permission_color(root.path, strrchr(root.path, '/') + 1, 'd', true);
+        assert(color.style == TERM_STYLE_BOLD && color.fg.kind == TERM_COLOR_BASIC &&
+            color.fg.value.index == 4);
+        assert(!term_sgr_has_effect(permission_color(root.path, "entry", '.', true)));
+        assert(!term_sgr_has_effect(permission_color(root.path, "entry", 'r', false)));
+        assert(!term_sgr_has_effect(permission_color(root.path, "entry", 'w', false)));
+        color = permission_color(root.path, "entry", 'x', false);
+        assert(color.style == TERM_STYLE_BOLD && color.fg.kind == TERM_COLOR_BASIC &&
+            color.fg.value.index == 2);
+        assert(!term_sgr_has_effect(permission_color(root.path, "entry", '-', false)));
+        color = path_color(root.path, strrchr(root.path, '/') + 1);
+        assert(color.style == TERM_STYLE_BOLD && color.fg.kind == TERM_COLOR_BASIC &&
+            color.fg.value.index == 4);
+        color = entry_color(&root, "opened");
+        assert(color.style == TERM_STYLE_BOLD && color.fg.kind == TERM_COLOR_BASIC &&
+            color.fg.value.index == 4);
     char breadcrumb_template[] = "/tmp/roam-breadcrumb-XXXXXX";
     char *breadcrumb_directory = mkdtemp(breadcrumb_template);
     assert(breadcrumb_directory);
@@ -220,11 +238,16 @@ int main(void)
     assert(breadcrumb_file && fclose(breadcrumb_file) == 0);
     TermSGR segment_colors[2];
     breadcrumb_colors(breadcrumb_entry, segment_colors);
-    assert(strcmp(segment_colors[0].parameters, "01;34") == 0);
-    assert(strcmp(segment_colors[1].parameters, "38;5;120") == 0);
+        assert(segment_colors[0].style == TERM_STYLE_BOLD &&
+            segment_colors[0].fg.kind == TERM_COLOR_BASIC &&
+            segment_colors[0].fg.value.index == 4);
+        assert(segment_colors[1].fg.kind == TERM_COLOR_INDEXED &&
+            segment_colors[1].fg.value.index == 120);
     breadcrumb_colors("/", segment_colors);
-    assert(strcmp(segment_colors[0].parameters, "01;34") == 0 &&
-           !segment_colors[1].parameters);
+        assert(segment_colors[0].style == TERM_STYLE_BOLD &&
+            segment_colors[0].fg.kind == TERM_COLOR_BASIC &&
+            segment_colors[0].fg.value.index == 4 &&
+            !term_sgr_has_effect(segment_colors[1]));
     assert(unlink(breadcrumb_entry) == 0 && rmdir(breadcrumb_directory) == 0);
     free(breadcrumb_entry);
     Directory focused;
