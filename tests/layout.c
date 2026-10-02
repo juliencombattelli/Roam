@@ -4,37 +4,56 @@
 
 #include <assert.h>
 
-#define TEST_RGB_COMPONENT 17
-
 int main(void)
 {
-    assert(strcmp(ANSI_BOLD, "1") == 0);
-    assert(strcmp(ANSI_ITALIC, "3") == 0);
-    assert(strcmp(ANSI_UNDERLINE, "4") == 0);
-    assert(strcmp(ANSI_STRIKETHROUGH, "9") == 0);
-    assert(strcmp(ANSI_BOLD ";" ANSI_ITALIC ";" ANSI_UNDERLINE, "1;3;4") == 0);
-    assert(strcmp(COLOR_STATUS_CURRENT_FG, "38;5;231;1") == 0);
-    assert(strcmp(COLOR_STATUS_CURRENT_PLAIN_FG, "38;5;231") == 0);
-    assert(sizeof(COLOR_STATUS_CURRENT_FG) == sizeof("38;5;231;1"));
-    assert(strcmp(COLOR_PERMISSION_READ_FG, "33") == 0);
-    assert(strcmp(COLOR_PERMISSION_WRITE_FG, "31") == 0);
-    const char *rgb_parameters = ANSI_BG_RGB(TEST_RGB_COMPONENT, 20, 255) ";"
-                                 ANSI_FG_RGB(10, 128, 200);
-    assert(strcmp(rgb_parameters, "48;2;17;20;255;38;2;10;128;200") == 0);
+    assert(COLOR_STATUS_CURRENT_FG.kind == TERM_COLOR_INDEXED);
+    assert(COLOR_STATUS_CURRENT_FG.value.index == 231);
+    assert(COLOR_PERMISSION_READ_FG.kind == TERM_COLOR_BASIC);
+    assert(COLOR_PERMISSION_READ_FG.value.index == 3);
+    assert(COLOR_PERMISSION_WRITE_FG.kind == TERM_COLOR_BASIC);
+    assert(COLOR_PERMISSION_WRITE_FG.value.index == 1);
     FILE *color_output = tmpfile();
     assert(color_output);
     int original_output = dup(STDOUT_FILENO);
     assert(original_output >= 0 && dup2(fileno(color_output), STDOUT_FILENO) >= 0);
-    term_set_color(rgb_parameters);
+    TermSGR default_sgr = {0};
+    term_set_color_(default_sgr);
     assert(fflush(stdout) == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     char sequence[64];
     size_t sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
     sequence[sequence_length] = '\0';
-    assert(strcmp(sequence, "\033[0;48;2;17;20;255;38;2;10;128;200m") == 0);
+    assert(strcmp(sequence, "\033[0m") == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     assert(ftruncate(fileno(color_output), 0) == 0);
-    term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_STATUS_CURRENT_FG);
+    term_set_color(
+        .style = TERM_STYLE_BOLD | TERM_STYLE_ITALIC,
+        .bg = ANSI_COLOR_RGB(17, 20, 255),
+        .fg = ANSI_COLOR_256(10)
+    );
+    assert(fflush(stdout) == 0);
+    assert(fseek(color_output, 0, SEEK_SET) == 0);
+    sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
+    sequence[sequence_length] = '\0';
+    assert(strcmp(sequence, "\033[0;48;2;17;20;255;38;5;10;1;3m") == 0);
+    assert(fseek(color_output, 0, SEEK_SET) == 0);
+    assert(ftruncate(fileno(color_output), 0) == 0);
+    term_set_color(
+        .bg = ANSI_COLOR_DEFAULT,
+        .fg = ANSI_COLOR(3)
+    );
+    assert(fflush(stdout) == 0);
+    assert(fseek(color_output, 0, SEEK_SET) == 0);
+    sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
+    sequence[sequence_length] = '\0';
+    assert(strcmp(sequence, "\033[0;49;33m") == 0);
+    assert(fseek(color_output, 0, SEEK_SET) == 0);
+    assert(ftruncate(fileno(color_output), 0) == 0);
+    term_set_color(
+        .style = TERM_STYLE_BOLD,
+        .bg = COLOR_STATUS_LINE_BG,
+        .fg = COLOR_STATUS_CURRENT_FG
+    );
     assert(fflush(stdout) == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
@@ -42,20 +61,20 @@ int main(void)
     assert(strcmp(sequence, "\033[0;48;5;234;38;5;231;1m") == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     assert(ftruncate(fileno(color_output), 0) == 0);
-    term_set_breadcrumb_color("1;31;44", true);
+    term_set_breadcrumb_color((TermSGR){.parameters = "1;31;44"}, true);
     assert(fflush(stdout) == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
     sequence[sequence_length] = '\0';
-    assert(strcmp(sequence, "\033[0;1;31;44m\033[48;5;234m\033[1m") == 0);
+    assert(strcmp(sequence, "\033[0;1;31;44;48;5;234;1m") == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     assert(ftruncate(fileno(color_output), 0) == 0);
-    term_set_breadcrumb_color("31;44", false);
+    term_set_breadcrumb_color((TermSGR){.parameters = "31;44"}, false);
     assert(fflush(stdout) == 0);
     assert(fseek(color_output, 0, SEEK_SET) == 0);
     sequence_length = fread(sequence, 1, sizeof(sequence) - 1, color_output);
     sequence[sequence_length] = '\0';
-    assert(strcmp(sequence, "\033[0;31;44m\033[48;5;234m") == 0);
+    assert(strcmp(sequence, "\033[0;31;44;48;5;234m") == 0);
     assert(dup2(original_output, STDOUT_FILENO) >= 0);
     close(original_output);
     fclose(color_output);
@@ -174,29 +193,38 @@ int main(void)
     for (size_t index = 0; index < navigation_depth; ++index)
         free_directory(&navigation[index]);
     free(navigation);
-    assert(setenv("LS_COLORS", "di=01;34:*.txt=38;5;120:ex=01;32", 1) == 0);
+    assert(setenv("LS_COLORS", "di=01;34:*.txt=38;5;120:ex=01;32:ln=target", 1) == 0);
     load_colors();
-    assert(strcmp(permission_color(root.path, strrchr(root.path, '/') + 1, 'd', true),
+    char *target_link = child_path(path, "target-link");
+    assert(target_link && symlink("opened", target_link) == 0);
+    assert(color_rule_uses_target("ln") && color_rule("ln").parameters == NULL);
+    assert(strcmp(path_color(target_link, "target-link").parameters, "01;34") == 0);
+    assert(unlink(target_link) == 0);
+    free(target_link);
+    assert(strcmp(permission_color(root.path, strrchr(root.path, '/') + 1,
+                                   'd', true).parameters, "01;34") == 0);
+    assert(permission_color(root.path, "entry", '.', true).parameters == NULL);
+    assert(permission_color(root.path, "entry", 'r', false).parameters == NULL);
+    assert(permission_color(root.path, "entry", 'w', false).parameters == NULL);
+    assert(strcmp(permission_color(root.path, "entry", 'x', false).parameters,
+                  "01;32") == 0);
+    assert(permission_color(root.path, "entry", '-', false).parameters == NULL);
+    assert(strcmp(path_color(root.path, strrchr(root.path, '/') + 1).parameters,
                   "01;34") == 0);
-    assert(strcmp(permission_color(root.path, "entry", '.', true), "37") == 0);
-    assert(strcmp(permission_color(root.path, "entry", 'r', false), "33") == 0);
-    assert(strcmp(permission_color(root.path, "entry", 'w', false), "31") == 0);
-    assert(strcmp(permission_color(root.path, "entry", 'x', false), "01;32") == 0);
-    assert(permission_color(root.path, "entry", '-', false) == NULL);
-    assert(strcmp(path_color(root.path, strrchr(root.path, '/') + 1), "01;34") == 0);
-    assert(strcmp(entry_color(&root, "opened"), "01;34") == 0);
+    assert(strcmp(entry_color(&root, "opened").parameters, "01;34") == 0);
     char breadcrumb_template[] = "/tmp/roam-breadcrumb-XXXXXX";
     char *breadcrumb_directory = mkdtemp(breadcrumb_template);
     assert(breadcrumb_directory);
     char *breadcrumb_entry = child_path(breadcrumb_directory, "selected.txt");
     FILE *breadcrumb_file = fopen(breadcrumb_entry, "w");
     assert(breadcrumb_file && fclose(breadcrumb_file) == 0);
-    const char *segment_colors[2];
+    TermSGR segment_colors[2];
     breadcrumb_colors(breadcrumb_entry, segment_colors);
-    assert(strcmp(segment_colors[0], "01;34") == 0);
-    assert(strcmp(segment_colors[1], "38;5;120") == 0);
+    assert(strcmp(segment_colors[0].parameters, "01;34") == 0);
+    assert(strcmp(segment_colors[1].parameters, "38;5;120") == 0);
     breadcrumb_colors("/", segment_colors);
-    assert(strcmp(segment_colors[0], "01;34") == 0 && !segment_colors[1]);
+    assert(strcmp(segment_colors[0].parameters, "01;34") == 0 &&
+           !segment_colors[1].parameters);
     assert(unlink(breadcrumb_entry) == 0 && rmdir(breadcrumb_directory) == 0);
     free(breadcrumb_entry);
     Directory focused;

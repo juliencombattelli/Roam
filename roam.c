@@ -25,24 +25,52 @@
 #include <wchar.h>
 #include <wordexp.h>
 
-#define ANSI_STRINGIFY_INNER(value) #value
-#define ANSI_STRINGIFY(value) ANSI_STRINGIFY_INNER(value)
-#define ANSI_SGR(parameters) "\033[" parameters "m"
-#define ANSI_BOLD "1"
-#define ANSI_DIM "2"
-#define ANSI_ITALIC "3"
-#define ANSI_UNDERLINE "4"
-#define ANSI_BLINK "5"
-#define ANSI_REVERSE "7"
-#define ANSI_HIDDEN "8"
-#define ANSI_STRIKETHROUGH "9"
-#define ANSI_BG_DEFAULT "49"
-#define ANSI_BG_256(value) "48;5;" ANSI_STRINGIFY(value)
-#define ANSI_FG_256(value) "38;5;" ANSI_STRINGIFY(value)
-#define ANSI_BG_RGB(red, green, blue) \
-    "48;2;" ANSI_STRINGIFY(red) ";" ANSI_STRINGIFY(green) ";" ANSI_STRINGIFY(blue)
-#define ANSI_FG_RGB(red, green, blue) \
-    "38;2;" ANSI_STRINGIFY(red) ";" ANSI_STRINGIFY(green) ";" ANSI_STRINGIFY(blue)
+typedef enum {
+    TERM_COLOR_UNSET,
+    TERM_COLOR_DEFAULT,
+    TERM_COLOR_BASIC,
+    TERM_COLOR_INDEXED,
+    TERM_COLOR_RGB
+} TermColorKind;
+
+typedef struct {
+    TermColorKind kind;
+    union {
+        unsigned index;
+        struct { unsigned red, green, blue; } rgb;
+    } value;
+} TermColor;
+
+enum {
+    TERM_STYLE_BOLD = 1u << 0,
+    TERM_STYLE_DIM = 1u << 1,
+    TERM_STYLE_ITALIC = 1u << 2,
+    TERM_STYLE_UNDERLINE = 1u << 3,
+    TERM_STYLE_BLINK = 1u << 4,
+    TERM_STYLE_REVERSE = 1u << 5,
+    TERM_STYLE_HIDDEN = 1u << 6,
+    TERM_STYLE_STRIKETHROUGH = 1u << 7
+};
+
+typedef struct {
+    bool noreset;
+    unsigned style;
+    TermColor fg;
+    TermColor bg;
+    const char *parameters;
+} TermSGR;
+
+#define ANSI_COLOR(number) \
+    ((TermColor){.kind = TERM_COLOR_BASIC, .value.index = (number)})
+
+#define ANSI_COLOR_256(number) \
+    ((TermColor){.kind = TERM_COLOR_INDEXED, .value.index = (number)})
+
+#define ANSI_COLOR_RGB(red_value, green_value, blue_value) \
+    ((TermColor){.kind = TERM_COLOR_RGB, \
+        .value.rgb = {(red_value), (green_value), (blue_value)}})
+
+#define ANSI_COLOR_DEFAULT ((TermColor){.kind = TERM_COLOR_DEFAULT})
 
 enum {
     MIN_TERMINAL_COLUMNS = 12,
@@ -70,22 +98,22 @@ enum {
     KEY_SEQUENCE_TIMEOUT_USEC = 50000
 };
 
-#define COLOR_ACCENT_FG                 ANSI_FG_256(110)
-#define COLOR_TREE_FG                   ANSI_FG_256(109)
-#define COLOR_STATUS_LINE_BG            ANSI_BG_256(234)
-#define COLOR_WINDOW_BG                 ANSI_BG_256(234)
+#define COLOR_ACCENT_FG                 ANSI_COLOR_256(110)
+#define COLOR_TREE_FG                   ANSI_COLOR_256(109)
+#define COLOR_STATUS_LINE_BG            ANSI_COLOR_256(234)
+#define COLOR_WINDOW_BG                 ANSI_COLOR_256(234)
 
-#define COLOR_METADATA_MUTED_FG         ANSI_FG_256(244)
-#define COLOR_STATUS_TEXT_FG            ANSI_FG_256(252)
+#define COLOR_METADATA_MUTED_FG         ANSI_COLOR_256(244)
+#define COLOR_STATUS_TEXT_FG            ANSI_COLOR_256(252)
 #define COLOR_STATUS_ACCENT_FG          COLOR_ACCENT_FG
-#define COLOR_STATUS_CURRENT_PLAIN_FG   ANSI_FG_256(231)
-#define COLOR_STATUS_CURRENT_FG         ANSI_FG_256(231) ";" ANSI_BOLD
-#define COLOR_STATUS_PARENT_FG          ANSI_FG_256(80)
-#define COLOR_STATUS_SUMMARY_FG         ANSI_FG_256(180)
-#define COLOR_STATUS_HELP_FG            ANSI_FG_256(152)
-#define COLOR_PERMISSION_READ_FG        "33"
-#define COLOR_PERMISSION_WRITE_FG       "31"
-#define COLOR_PERMISSION_FILE_TYPE_FG   "37"
+#define COLOR_STATUS_CURRENT_PLAIN_FG   ANSI_COLOR_256(231)
+#define COLOR_STATUS_CURRENT_FG         ANSI_COLOR_256(231)
+#define COLOR_STATUS_PARENT_FG          ANSI_COLOR_256(80)
+#define COLOR_STATUS_SUMMARY_FG         ANSI_COLOR_256(180)
+#define COLOR_STATUS_HELP_FG            ANSI_COLOR_256(152)
+#define COLOR_PERMISSION_READ_FG        ANSI_COLOR(3)
+#define COLOR_PERMISSION_WRITE_FG       ANSI_COLOR(1)
+#define COLOR_PERMISSION_FILE_TYPE_FG   ANSI_COLOR(7)
 
 static const char EMPTY_DIRECTORY_LABEL[] = "(empty)";
 static const char *const SIZE_UNITS[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
@@ -285,17 +313,111 @@ static void term_clear_line(void)
     fputs("\033[2K", stdout);
 }
 
-static void term_set_color(const char *parameters)
+static void term_write_sgr_parameter(bool *has_parameter, unsigned parameter)
 {
-    printf(ANSI_SGR("0;%s"), parameters);
+    if (*has_parameter)
+        putchar(';');
+    printf("%u", parameter);
+    *has_parameter = true;
 }
 
-static void term_set_breadcrumb_color(const char *parameters, bool selected)
+static void term_write_color(bool *has_parameter, TermColor color, bool foreground)
 {
-    term_set_color(parameters);
-    fputs(ANSI_SGR(COLOR_STATUS_LINE_BG), stdout);
-    if (selected)
-        fputs(ANSI_SGR(ANSI_BOLD), stdout);
+    switch (color.kind) {
+    case TERM_COLOR_UNSET:
+        break;
+    case TERM_COLOR_DEFAULT:
+        term_write_sgr_parameter(has_parameter, foreground ? 39 : 49);
+        break;
+    case TERM_COLOR_BASIC:
+        if (color.value.index <= 7)
+            term_write_sgr_parameter(has_parameter,
+                                     (foreground ? 30 : 40) + color.value.index);
+        else if (color.value.index <= 15)
+            term_write_sgr_parameter(has_parameter,
+                                     (foreground ? 90 : 100) + color.value.index - 8);
+        break;
+    case TERM_COLOR_INDEXED:
+        if (color.value.index <= 255) {
+            term_write_sgr_parameter(has_parameter, foreground ? 38 : 48);
+            term_write_sgr_parameter(has_parameter, 5);
+            term_write_sgr_parameter(has_parameter, color.value.index);
+        }
+        break;
+    case TERM_COLOR_RGB:
+        if (color.value.rgb.red <= 255 && color.value.rgb.green <= 255 &&
+            color.value.rgb.blue <= 255) {
+            term_write_sgr_parameter(has_parameter, foreground ? 38 : 48);
+            term_write_sgr_parameter(has_parameter, 2);
+            term_write_sgr_parameter(has_parameter, color.value.rgb.red);
+            term_write_sgr_parameter(has_parameter, color.value.rgb.green);
+            term_write_sgr_parameter(has_parameter, color.value.rgb.blue);
+        }
+        break;
+    }
+}
+
+static bool term_color_is_valid(TermColor color)
+{
+    switch (color.kind) {
+    case TERM_COLOR_UNSET:
+    case TERM_COLOR_DEFAULT:
+        return true;
+    case TERM_COLOR_BASIC:
+        return color.value.index <= 15;
+    case TERM_COLOR_INDEXED:
+        return color.value.index <= 255;
+    case TERM_COLOR_RGB:
+        return color.value.rgb.red <= 255 && color.value.rgb.green <= 255 &&
+               color.value.rgb.blue <= 255;
+    }
+    return false;
+}
+
+static void term_set_color_(TermSGR sgr)
+{
+    const unsigned supported_styles = TERM_STYLE_BOLD | TERM_STYLE_DIM |
+        TERM_STYLE_ITALIC | TERM_STYLE_UNDERLINE | TERM_STYLE_BLINK |
+        TERM_STYLE_REVERSE | TERM_STYLE_HIDDEN | TERM_STYLE_STRIKETHROUGH;
+    bool has_color = (sgr.fg.kind != TERM_COLOR_UNSET && term_color_is_valid(sgr.fg)) ||
+                     (sgr.bg.kind != TERM_COLOR_UNSET && term_color_is_valid(sgr.bg));
+    if (sgr.noreset && !(sgr.style & supported_styles) && !has_color &&
+        !sgr.parameters)
+        return;
+    bool has_parameter = false;
+    fputs("\033[", stdout);
+    if (!sgr.noreset)
+        term_write_sgr_parameter(&has_parameter, 0);
+    if (sgr.parameters && *sgr.parameters) {
+        if (has_parameter)
+            putchar(';');
+        fputs(sgr.parameters, stdout);
+        has_parameter = true;
+    }
+    term_write_color(&has_parameter, sgr.bg, false);
+    term_write_color(&has_parameter, sgr.fg, true);
+    const unsigned style_bits[] = {
+        TERM_STYLE_BOLD, TERM_STYLE_DIM, TERM_STYLE_ITALIC, TERM_STYLE_UNDERLINE,
+        TERM_STYLE_BLINK, TERM_STYLE_REVERSE, TERM_STYLE_HIDDEN,
+        TERM_STYLE_STRIKETHROUGH
+    };
+    const unsigned style_codes[] = {1, 2, 3, 4, 5, 7, 8, 9};
+    for (size_t index = 0; index < sizeof(style_bits) / sizeof(*style_bits); ++index)
+        if (sgr.style & style_bits[index])
+            term_write_sgr_parameter(&has_parameter, style_codes[index]);
+    if (has_parameter)
+        putchar('m');
+    else
+        return;
+}
+
+#define term_set_color(...) term_set_color_((TermSGR){__VA_ARGS__})
+
+static void term_set_breadcrumb_color(TermSGR color, bool selected)
+{
+    term_set_color(.parameters = color.parameters,
+                   .bg = COLOR_STATUS_LINE_BG,
+                   .style = selected ? TERM_STYLE_BOLD : 0);
 }
 
 static void term_reverse_video(void)
@@ -429,37 +551,47 @@ static void load_colors(void)
     }
 }
 
-static const char *color_rule(const char *key)
+static const char *color_rule_parameters(const char *key)
 {
-    const char *color = NULL;
+    const char *parameters = NULL;
     for (size_t index = 0; index < color_rule_count; ++index)
         if (strcmp(color_rules[index].key, key) == 0)
-            color = color_rules[index].sgr;
-    return color;
+            parameters = color_rules[index].sgr;
+    return parameters;
 }
 
-static const char *path_color(const char *path, const char *name)
+static TermSGR color_rule(const char *key)
+{
+    const char *parameters = color_rule_parameters(key);
+    if (!parameters || strcmp(parameters, "target") == 0)
+        return (TermSGR){.noreset = true};
+    return (TermSGR){.parameters = parameters};
+}
+
+static bool color_rule_uses_target(const char *key)
+{
+    const char *parameters = color_rule_parameters(key);
+    return parameters && strcmp(parameters, "target") == 0;
+}
+
+static TermSGR path_color(const char *path, const char *name)
 {
     struct stat info;
-    const char *color = NULL;
+    TermSGR color = {.noreset = true};
     if (lstat(path, &info) < 0) {
-        color = color_rule("mi");
-        return color;
+        return color_rule("mi");
     }
     if (S_ISLNK(info.st_mode)) {
-        const char *link_color = color_rule("ln");
+        TermSGR link_color = color_rule("ln");
+        bool target = color_rule_uses_target("ln");
         if (stat(path, &info) < 0) {
             color = color_rule("or");
-            if (!color && link_color && strcmp(link_color, "target") != 0)
-                color = link_color;
-        } else if (link_color && strcmp(link_color, "target") == 0) {
-            color = NULL;
+            if (color.parameters)
+                return color;
+            return target ? color : link_color;
         } else {
-            color = link_color;
-            return color;
-        }
-        if (color || !link_color || strcmp(link_color, "target") != 0) {
-            return color;
+            if (!target)
+                return link_color;
         }
     }
     if (S_ISDIR(info.st_mode)) {
@@ -469,7 +601,7 @@ static const char *path_color(const char *path, const char *name)
             color = color_rule("ow");
         else if (info.st_mode & S_ISVTX)
             color = color_rule("st");
-        if (!color)
+        if (!color.parameters)
             color = color_rule("di");
     } else if (S_ISREG(info.st_mode)) {
         if (info.st_mode & S_ISUID)
@@ -483,7 +615,7 @@ static const char *path_color(const char *path, const char *name)
         for (size_t index = 0; index < color_rule_count; ++index)
             if (color_rules[index].key[0] == '*' &&
                 fnmatch(color_rules[index].key, name, 0) == 0)
-                color = color_rules[index].sgr;
+                color = (TermSGR){.parameters = color_rules[index].sgr};
     } else if (S_ISFIFO(info.st_mode)) {
         color = color_rule("pi");
     } else if (S_ISSOCK(info.st_mode)) {
@@ -496,37 +628,33 @@ static const char *path_color(const char *path, const char *name)
     return color;
 }
 
-static const char *entry_color(const Directory *directory, const char *name)
+static TermSGR entry_color(const Directory *directory, const char *name)
 {
     char *path = child_path(directory->path, name);
     if (!path)
-        return NULL;
-    const char *color = path_color(path, name);
+        return (TermSGR){.noreset = true};
+    TermSGR color = path_color(path, name);
     free(path);
     return color;
 }
 
-static const char *permission_color(const char *path, const char *name,
-                                    char permission, bool file_type)
+static TermSGR permission_color(const char *path, const char *name,
+                                char permission, bool file_type)
 {
     if (file_type && permission == '.')
-        return COLOR_PERMISSION_FILE_TYPE_FG;
+        return (TermSGR){.noreset = true};
     if (file_type || permission == 's' || permission == 'S' ||
         permission == 't' || permission == 'T')
         return path_color(path, name);
-    if (permission == 'r')
-        return COLOR_PERMISSION_READ_FG;
-    if (permission == 'w')
-        return COLOR_PERMISSION_WRITE_FG;
     if (permission == 'x')
         return color_rule("ex");
-    return NULL;
+    return (TermSGR){.noreset = true};
 }
 
-static void breadcrumb_colors(const char *path, const char *colors[2])
+static void breadcrumb_colors(const char *path, TermSGR colors[2])
 {
-    colors[0] = NULL;
-    colors[1] = NULL;
+    colors[0] = (TermSGR){.noreset = true};
+    colors[1] = (TermSGR){.noreset = true};
     if (!color_rule_count)
         return;
     if (strcmp(path, "/") == 0) {
@@ -846,7 +974,7 @@ static void draw_entry_info(const struct stat *info, const char *path,
                             int row, int column, int columns)
 {
     term_move_cursor(row, column);
-    term_set_color(COLOR_STATUS_LINE_BG);
+    term_set_color(.bg = COLOR_STATUS_LINE_BG);
     if (!info) {
         text("Metadata unavailable", columns);
         int printed = text_width("Metadata unavailable", columns);
@@ -882,34 +1010,35 @@ static void draw_entry_info(const struct stat *info, const char *path,
         bool environment_color = index == 0 || mode[index] == 'x' ||
                                  mode[index] == 's' || mode[index] == 'S' ||
                                  mode[index] == 't' || mode[index] == 'T';
-        const char *color = permission_color(path, name, mode[index], index == 0);
+        TermSGR color = permission_color(path, name, mode[index], index == 0);
         if (environment_color) {
-            if (color) {
-                term_set_color(color);
-                fputs(ANSI_SGR(COLOR_STATUS_LINE_BG), stdout);
+            if (color.parameters) {
+                term_set_color(.parameters = color.parameters, .bg = COLOR_STATUS_LINE_BG);
+            } else if (index == 0 && mode[index] == '.') {
+                term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_PERMISSION_FILE_TYPE_FG);
             } else {
-                term_set_color(COLOR_STATUS_LINE_BG);
+                term_set_color(.bg = COLOR_STATUS_LINE_BG);
             }
         } else if (mode[index] == 'r') {
-            term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_PERMISSION_READ_FG);
+            term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_PERMISSION_READ_FG);
         } else if (mode[index] == 'w') {
-            term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_PERMISSION_WRITE_FG);
+            term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_PERMISSION_WRITE_FG);
         } else {
-            term_set_color(COLOR_STATUS_LINE_BG);
+            term_set_color(.bg = COLOR_STATUS_LINE_BG);
         }
         putchar(mode[index]);
     }
-    term_set_color(COLOR_STATUS_LINE_BG);
+    term_set_color(.bg = COLOR_STATUS_LINE_BG);
 
     char owner_group[640], details[64];
     format_entry_details(info, owner_group, sizeof(owner_group), details, sizeof(details));
     if (columns > 10) {
         int remaining = columns - 10;
-        term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_METADATA_MUTED_FG);
+        term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_METADATA_MUTED_FG);
         text(owner_group, remaining);
         int printed = text_width(owner_group, remaining);
         remaining -= printed;
-        term_set_color(COLOR_STATUS_LINE_BG);
+        term_set_color(.bg = COLOR_STATUS_LINE_BG);
         text(details, remaining);
         printed = text_width(details, remaining);
         if (printed < remaining)
@@ -971,11 +1100,11 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
     int summary_column = bar_width - summary_width - (metadata_width ? metadata_width + 2 : 0);
     int left_limit = summary_column - (summary_width ? 2 : 1);
     term_move_cursor(rows - 2, 0);
-    term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_STATUS_TEXT_FG);
+    term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_STATUS_TEXT_FG);
     putchar(' ');
     term_move_cursor(rows - 2, 1);
     const char *breadcrumb_path = focused ? focused : active->path;
-    const char *segment_colors[2];
+    TermSGR segment_colors[2];
     breadcrumb_colors(breadcrumb_path, segment_colors);
     char *path = strdup(breadcrumb_path);
     const char *segments[2] = {NULL};
@@ -1011,35 +1140,37 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
         if (index != first) {
             if (left_limit - used - 1 < 4)
                 break;
-            term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_STATUS_ACCENT_FG);
+            term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_STATUS_ACCENT_FG);
             text(" › ", left_limit - used - 1);
             used += 3;
         }
-        const char *color = segment_colors[index];
-        if (color)
+        TermSGR color = segment_colors[index];
+        if (color.parameters)
             term_set_breadcrumb_color(color, index == count - 1 && focused_directory);
         else {
-            const char *parameters = index == count - 1
-                ? focused_directory
-                    ? COLOR_STATUS_LINE_BG ";" COLOR_STATUS_CURRENT_FG
-                    : COLOR_STATUS_LINE_BG ";" COLOR_STATUS_CURRENT_PLAIN_FG
-                : COLOR_STATUS_LINE_BG ";" COLOR_STATUS_PARENT_FG;
-            term_set_color(parameters);
+            bool current = index == count - 1;
+            term_set_color(
+                .style = current && focused_directory ? TERM_STYLE_BOLD : 0,
+                .bg = COLOR_STATUS_LINE_BG,
+                .fg = current ? focused_directory ? COLOR_STATUS_CURRENT_FG
+                                                  : COLOR_STATUS_CURRENT_PLAIN_FG
+                              : COLOR_STATUS_PARENT_FG
+            );
         }
         int width = left_limit - used - 1;
         clipped_text(segments[index], 0, width);
         used += text_width(segments[index], width);
     }
     free(path);
-    term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_STATUS_TEXT_FG);
+    term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_STATUS_TEXT_FG);
     term_move_cursor(rows - 2, used);
     if (used < summary_column)
         printf("%*s", summary_column - used, "");
-    term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_STATUS_SUMMARY_FG);
+    term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_STATUS_SUMMARY_FG);
     term_move_cursor(rows - 2, summary_column);
     text(summary, summary_width);
     if (metadata_width) {
-        term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_STATUS_TEXT_FG);
+        term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_STATUS_TEXT_FG);
         fputs("  ", stdout);
         if (active->count)
             draw_entry_info(has_info ? &info : NULL, focused, rows - 2,
@@ -1048,7 +1179,7 @@ static void draw_status_bar(const Directory *active, int rows, int columns)
             printf("%*s", metadata_width, "");
     }
     term_move_cursor(rows - 2, bar_width);
-    term_set_color(COLOR_STATUS_LINE_BG ";" COLOR_STATUS_HELP_FG);
+    term_set_color(.bg = COLOR_STATUS_LINE_BG, .fg = COLOR_STATUS_HELP_FG);
     fputs("  ? keys ", stdout);
     term_reset_style();
     free(focused);
@@ -1262,13 +1393,13 @@ static long draw(const Directory *directories, size_t depth, const char *message
         for (int entry = 0; entry < directory->count; ++entry) {
             int row = entry_top_row + entry;
             if (row >= 2 && row < rows - 2 && name_width > 0) {
-                const char *color = color_rule_count
-                    ? entry_color(directory, directory->entries[entry]->d_name) : NULL;
-                term_set_color(ANSI_BG_DEFAULT);
-                if (color) {
-                    term_set_color(color);
-                    fputs(ANSI_SGR(ANSI_BG_DEFAULT), stdout);
-                }
+                TermSGR color = color_rule_count
+                    ? entry_color(directory, directory->entries[entry]->d_name)
+                    : (TermSGR){.noreset = true};
+                if (color.parameters)
+                    term_set_color(.parameters = color.parameters, .bg = ANSI_COLOR_DEFAULT);
+                else
+                    term_set_color(.bg = ANSI_COLOR_DEFAULT);
                 if (index == active_index && entry == directory->selected)
                     term_reverse_video();
                 term_move_cursor(row, name_left);
@@ -1319,7 +1450,7 @@ static long draw(const Directory *directories, size_t depth, const char *message
         for (size_t cell = 0; cell < cells; ++cell)
             routes[cell] |= rails[cell];
     if (routes) {
-        term_set_color(COLOR_TREE_FG);
+        term_set_color(.fg = COLOR_TREE_FG);
         draw_routes(routes, columns, rows);
         term_reset_style();
         if (frame)
@@ -1329,18 +1460,18 @@ static long draw(const Directory *directories, size_t depth, const char *message
     }
     if (root_label_visible) {
         term_move_cursor(root_row, root_column - root_width - 2);
-        const char *color = color_rule_count ? path_color(root->path, root_name) : NULL;
-        if (color) {
-            term_set_color(color);
-            fputs(ANSI_SGR(ANSI_BG_DEFAULT), stdout);
+        TermSGR color = color_rule_count ? path_color(root->path, root_name)
+                                         : (TermSGR){.noreset = true};
+        if (color.parameters) {
+            term_set_color(.parameters = color.parameters, .bg = ANSI_COLOR_DEFAULT);
         } else {
-            term_set_color(ANSI_BG_DEFAULT);
+            term_set_color(.bg = ANSI_COLOR_DEFAULT);
         }
         clipped_text(root_name, 0, root_width);
         mark_cells(frame, columns, rows, root_row, root_column - root_width - 2, root_width);
         term_reset_style();
         term_move_cursor(root_row, root_column - 1);
-        term_set_color(COLOR_TREE_FG);
+        term_set_color(.fg = COLOR_TREE_FG);
         fputs("─", stdout);
         mark_cells(frame, columns, rows, root_row, root_column - 1, 1);
         term_reset_style();
@@ -1547,7 +1678,7 @@ static void show_keys(bool cd_mode)
             int visible = height - 4;
             if (first > count - visible)
                 first = count - visible;
-            term_set_color(COLOR_WINDOW_BG ";" COLOR_STATUS_ACCENT_FG);
+            term_set_color(.bg = COLOR_WINDOW_BG, .fg = COLOR_STATUS_ACCENT_FG);
             term_move_cursor(top, left);
             fputs("╭", stdout);
             for (int column = 0; column < width - 2; ++column)
@@ -1556,9 +1687,9 @@ static void show_keys(bool cd_mode)
             for (int row = 1; row < height - 1; ++row) {
                 term_move_cursor(top + row, left);
                 fputs("│", stdout);
-                term_set_color(COLOR_WINDOW_BG ";" COLOR_STATUS_TEXT_FG);
+                term_set_color(.bg = COLOR_WINDOW_BG, .fg = COLOR_STATUS_TEXT_FG);
                 printf("%*s", width - 2, "");
-                term_set_color(COLOR_WINDOW_BG ";" COLOR_STATUS_ACCENT_FG);
+                term_set_color(.bg = COLOR_WINDOW_BG, .fg = COLOR_STATUS_ACCENT_FG);
                 fputs("│", stdout);
             }
             term_move_cursor(top + height - 1, left);
@@ -1566,10 +1697,10 @@ static void show_keys(bool cd_mode)
             for (int column = 0; column < width - 2; ++column)
                 fputs("─", stdout);
             fputs("╯", stdout);
-            term_set_color(COLOR_WINDOW_BG ";" COLOR_STATUS_CURRENT_FG);
+            term_set_color(.style = TERM_STYLE_BOLD, .bg = COLOR_WINDOW_BG, .fg = COLOR_STATUS_CURRENT_FG);
             term_move_cursor(top + 1, left + 2);
             text("Keys", width - 4);
-            term_set_color(COLOR_WINDOW_BG ";" COLOR_STATUS_TEXT_FG);
+            term_set_color(.bg = COLOR_WINDOW_BG, .fg = COLOR_STATUS_TEXT_FG);
             for (int index = 0; index < visible; ++index) {
                 int control = first + index;
                 if (!cd_mode && control >= 9)
@@ -1577,7 +1708,7 @@ static void show_keys(bool cd_mode)
                 term_move_cursor(top + 2 + index, left + 2);
                 text(KEY_HELP_TEXT[control], width - 4);
             }
-            term_set_color(COLOR_WINDOW_BG ";" COLOR_STATUS_ACCENT_FG);
+            term_set_color(.bg = COLOR_WINDOW_BG, .fg = COLOR_STATUS_ACCENT_FG);
             term_move_cursor(top + height - 2, left + 2);
             text("Esc / q close", width - 4);
             term_reset_style();
