@@ -152,6 +152,9 @@ static bool terminal_active;
 static volatile sig_atomic_t stopped;
 static volatile sig_atomic_t resized;
 static bool color_warning;
+static unsigned *unsupported_sgr_codes;
+static size_t unsupported_sgr_code_count;
+static size_t unsupported_sgr_code_capacity;
 static ColorRule *color_rules;
 static size_t color_rule_count;
 static char *color_storage;
@@ -519,6 +522,32 @@ static char *child_path(const char *parent, const char *name)
     return path;
 }
 
+static void warn_unsupported_sgr(unsigned code)
+{
+    color_warning = true;
+    for (size_t index = 0; index < unsupported_sgr_code_count; ++index)
+        if (unsupported_sgr_codes[index] == code)
+            return;
+    if (unsupported_sgr_code_count == unsupported_sgr_code_capacity) {
+        size_t maximum = (size_t)-1 / sizeof(*unsupported_sgr_codes);
+        size_t capacity = unsupported_sgr_code_capacity;
+        if (!capacity)
+            capacity = 16;
+        else if (capacity > maximum / 2)
+            return;
+        else
+            capacity *= 2;
+        if (capacity > maximum)
+            return;
+        unsigned *grown = realloc(unsupported_sgr_codes, capacity * sizeof(*grown));
+        if (!grown)
+            return;
+        unsupported_sgr_codes = grown;
+        unsupported_sgr_code_capacity = capacity;
+    }
+    unsupported_sgr_codes[unsupported_sgr_code_count++] = code;
+}
+
 static bool next_sgr_parameter(const char **cursor, bool *has_parameter,
                                unsigned *parameter)
 {
@@ -564,7 +593,7 @@ static TermSGR parse_sgr_parameters(const char *parameters)
             bool foreground = code == 38;
             unsigned mode;
             if (!next_sgr_parameter(&cursor, &has_parameter, &mode)) {
-                color_warning = true;
+                warn_unsupported_sgr(code);
                 continue;
             }
             if (mode == 5) {
@@ -578,7 +607,7 @@ static TermSGR parse_sgr_parameters(const char *parameters)
                         sgr.bg = color;
                     recognized = true;
                 } else {
-                    color_warning = true;
+                    warn_unsupported_sgr(code);
                 }
             } else if (mode == 2) {
                 unsigned red, green, blue;
@@ -593,10 +622,10 @@ static TermSGR parse_sgr_parameters(const char *parameters)
                         sgr.bg = color;
                     recognized = true;
                 } else {
-                    color_warning = true;
+                    warn_unsupported_sgr(code);
                 }
             } else {
-                color_warning = true;
+                warn_unsupported_sgr(code);
             }
             continue;
         }
@@ -661,7 +690,7 @@ static TermSGR parse_sgr_parameters(const char *parameters)
             sgr.bg = ANSI_COLOR(code >= 100 ? code - 100 + 8 : code - 40);
             recognized = true;
         } else {
-            color_warning = true;
+            warn_unsupported_sgr(code);
         }
     }
     if (!recognized)
@@ -1648,8 +1677,25 @@ static long draw(const Directory *directories, size_t depth, const char *message
             term_clear_line();
             text(message, columns);
         } else if (color_warning) {
+            char warning[256];
             term_clear_line();
-            text("Warning: unsupported LS_COLORS styles ignored", columns);
+            if (unsupported_sgr_code_count) {
+                size_t used = (size_t)snprintf(warning, sizeof(warning),
+                                               "Warning: unsupported LS_COLORS SGR codes:");
+                for (size_t index = 0; index < unsupported_sgr_code_count &&
+                     used < sizeof(warning); ++index) {
+                    int written = snprintf(warning + used, sizeof(warning) - used,
+                                           "%s%u", index ? ", " : " ",
+                                           unsupported_sgr_codes[index]);
+                    if (written < 0 || (size_t)written >= sizeof(warning) - used)
+                        break;
+                    used += (size_t)written;
+                }
+            } else {
+                snprintf(warning, sizeof(warning),
+                         "Warning: unsupported LS_COLORS values ignored");
+            }
+            text(warning, columns);
         } else
             term_clear_line();
     }
@@ -2458,6 +2504,7 @@ int main(int argc, char **argv)
     free_directories(directories, depth);
     free(color_rules);
     free(color_storage);
+    free(unsupported_sgr_codes);
     restore_terminal();
     int result = chosen_directory && dprintf(output_fd, "%s\n", chosen_directory) < 0 ? 1 : 0;
     free(chosen_directory);

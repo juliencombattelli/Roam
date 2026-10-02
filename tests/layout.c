@@ -206,6 +206,12 @@ int main(void)
         parsed = parse_sgr_parameters("58;5;120;31");
         assert(parsed.style == 0 && parsed.fg.kind == TERM_COLOR_BASIC &&
             parsed.fg.value.index == 1);
+            assert(unsupported_sgr_code_count == 2);
+            assert(unsupported_sgr_codes[0] == 55 && unsupported_sgr_codes[1] == 58);
+    assert(unsupported_sgr_code_capacity == 16);
+    for (unsigned code = 70; code < 85; ++code)
+        warn_unsupported_sgr(code);
+    assert(unsupported_sgr_code_count == 17 && unsupported_sgr_code_capacity == 32);
     char *target_link = child_path(path, "target-link");
     assert(target_link && symlink("opened", target_link) == 0);
         assert(color_rule_uses_target("ln") && !term_sgr_has_effect(color_rule("ln")));
