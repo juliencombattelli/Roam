@@ -2,6 +2,7 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:sys/posix"
 
 KEY_IDLE_TIMEOUT_USEC     :: 200_000
@@ -141,33 +142,39 @@ draw_screen :: proc(message: string) {
     fmt.println("Press a key to continue.")
 }
 
-restore_terminal :: proc(original: ^posix.termios) {
-    fmt.println("\x1b[<u\x1b[0m\x1b[?25h\x1b[?1049l")
-    posix.tcsetattr(posix.FD(posix.STDIN_FILENO), .TCSAFLUSH, original)
-}
-
-main :: proc() {
-    if posix.isatty(posix.FD(posix.STDIN_FILENO)) == false ||
-        posix.isatty(posix.FD(posix.STDOUT_FILENO)) == false {
-        fmt.println("An interactive terminal is required.")
-        return
-    }
-
-    original: posix.termios
-    if posix.tcgetattr(posix.FD(posix.STDIN_FILENO), &original) != .OK {
+term_prepare :: proc() -> (original_termios: posix.termios, ok: bool = true) {
+    if posix.tcgetattr(posix.FD(posix.STDIN_FILENO), &original_termios) != .OK {
         fmt.println("Cannot read terminal settings.")
+        ok = false
         return
     }
-    raw := original
+    raw := original_termios
     raw.c_lflag &~= {.ECHO, .ICANON, .ISIG, .IEXTEN}
     raw.c_iflag &~= {.IXON, .ICRNL}
     raw.c_cc[.VMIN] = posix.cc_t(1)
     raw.c_cc[.VTIME] = posix.cc_t(0)
     if posix.tcsetattr(posix.FD(posix.STDIN_FILENO), .TCSAFLUSH, &raw) != .OK {
         fmt.println("Cannot configure terminal input.")
+        ok = false
         return
     }
-    defer restore_terminal(&original)
+    return
+}
+
+term_restore :: proc(original_termios: ^posix.termios) {
+    fmt.println("\x1b[<u\x1b[0m\x1b[?25h\x1b[?1049l")
+    posix.tcsetattr(posix.FD(posix.STDIN_FILENO), .TCSAFLUSH, original_termios)
+}
+
+run :: proc() -> (ok: bool) {
+    if posix.isatty(posix.FD(posix.STDIN_FILENO)) == false ||
+        posix.isatty(posix.FD(posix.STDOUT_FILENO)) == false {
+        fmt.println("An interactive terminal is required.")
+        return false
+    }
+
+    original_termios := term_prepare() or_return
+    defer term_restore(&original_termios)
 
     fmt.println("\x1b[?1049h\x1b[?25l\x1b[>28u")
     message := ""
@@ -185,4 +192,14 @@ main :: proc() {
             draw_screen(message)
         }
     }
+    return true
+}
+
+main :: proc() {
+    code := 0
+    ok := run()
+    if !ok {
+        code = 1
+    }
+    os.exit(code)
 }
